@@ -24,7 +24,7 @@ class Hyperswap(BaseSwaper):
         print(f"Loading Swapper Model: {model_key} {provider_names}")
         
         # 1. Initialize ONNX Session
-        self.session = onnxruntime.InferenceSession(model_path, providers=self.providers)
+        self.session = onnxruntime.InferenceSession(model_path, providers=self.providers, sess_options=state.session_options)
         
         self.template = 'arcface_128'
         self.crop_size = (256, 256)
@@ -39,6 +39,8 @@ class Hyperswap(BaseSwaper):
             self.template, 
             self.crop_size
         )
+        
+        original_crop_vision_frame = crop_vision_frame.copy()
         
         # 2. Prepare target crop tensor
         crop_vision_frame = crop_vision_frame[:, :, ::-1] / 255.0  # BGR to RGB, normalize 0-1
@@ -73,7 +75,7 @@ class Hyperswap(BaseSwaper):
         
         # 6. Generate precise mask using Parser
         from modules.parser import get_combined_mask
-        crop_mask = get_combined_mask(swapped_crop, state.mask_types, target_face, affine_matrix)
+        crop_mask = get_combined_mask(temp_vision_frame, original_crop_vision_frame, state.mask_types, target_face, affine_matrix)
         
         # 7. Paste back
         paste_vision_frame = face_math.paste_back(temp_vision_frame, swapped_crop, crop_mask, affine_matrix)

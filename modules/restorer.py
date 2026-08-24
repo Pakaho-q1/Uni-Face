@@ -22,12 +22,14 @@ class FaceRestorer:
             
         provider_names = [p if isinstance(p, str) else p[0] for p in self.providers]
         print(f"Loading Restorer Model: {model_key} {provider_names}")
-        self.session = onnxruntime.InferenceSession(str(MODEL_PATHS[model_key]), providers=self.providers)
+        self.session = onnxruntime.InferenceSession(str(MODEL_PATHS[model_key]), providers=self.providers, sess_options=state.session_options)
         
         # Set crop size based on model
         self.template = 'ffhq_512'
         if '256' in model_key:
             self.crop_size = (256, 256)
+        elif '1024' in model_key:
+            self.crop_size = (1024, 1024)
         else:
             self.crop_size = (512, 512)
         
@@ -75,7 +77,7 @@ class FaceRestorer:
         
         # 5. Get Parsing Mask for seamless paste
         # This prevents restoring hair, hands, or background.
-        crop_mask = get_combined_mask(enhanced_crop)
+        crop_mask = get_combined_mask(temp_vision_frame, enhanced_crop)
         
         # 6. Paste back
         paste_vision_frame = face_math.paste_back(temp_vision_frame, enhanced_crop, crop_mask, affine_matrix)
@@ -90,12 +92,14 @@ class FaceRestorer:
 # Export a default instance
 import threading
 restorer_app = None
+current_restore_model = None
 _lock = threading.Lock()
 
 def restore(target_face: Face, frame: np.ndarray, weight: float = 0.5, blend: float = 1.0) -> np.ndarray:
-    global restorer_app
-    if restorer_app is None:
+    global restorer_app, current_restore_model
+    if restorer_app is None or current_restore_model != state.restore_model:
         with _lock:
-            if restorer_app is None:
+            if restorer_app is None or current_restore_model != state.restore_model:
                 restorer_app = FaceRestorer()
+                current_restore_model = state.restore_model
     return restorer_app.restore(target_face, frame, weight, blend)

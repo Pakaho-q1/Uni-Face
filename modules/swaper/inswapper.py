@@ -26,7 +26,7 @@ class Inswapper(BaseSwaper):
         print(f"Loading Swapper Model: {model_key} {provider_names}")
         
         # 1. Initialize ONNX Session
-        self.session = onnxruntime.InferenceSession(model_path, providers=self.providers)
+        self.session = onnxruntime.InferenceSession(model_path, providers=self.providers, sess_options=state.session_options)
         
         # 2. Extract model initializer for embedding dot product
         model = onnx.load(model_path)
@@ -45,6 +45,8 @@ class Inswapper(BaseSwaper):
             self.template, 
             self.crop_size
         )
+        
+        original_crop_vision_frame = crop_vision_frame.copy()
         
         # 2. Prepare target crop tensor
         crop_vision_frame = crop_vision_frame[:, :, ::-1] / 255.0  # BGR to RGB, normalize 0-1
@@ -79,9 +81,10 @@ class Inswapper(BaseSwaper):
         swapped_crop = swapped_crop.clip(0, 1)
         swapped_crop = swapped_crop[:, :, ::-1] * 255.0 # RGB to BGR
         
-        # 6. Generate precise mask using Parser
+        # 6. Generate precise mask using Parser on the original target crop (not swapped_crop)
+        # This ensures we preserve the target's exact facial features, hands, or occlusions.
         from modules.parser import get_combined_mask
-        crop_mask = get_combined_mask(swapped_crop, state.mask_types, target_face, affine_matrix)
+        crop_mask = get_combined_mask(temp_vision_frame, original_crop_vision_frame, state.mask_types, target_face, affine_matrix)
         
         # 7. Paste back
         paste_vision_frame = face_math.paste_back(temp_vision_frame, swapped_crop, crop_mask, affine_matrix)

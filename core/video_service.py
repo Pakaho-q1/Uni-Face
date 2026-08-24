@@ -14,7 +14,7 @@ from core.service import process_image
 from core.config import ROOT_DIR
 from core.state import state
 from core.types import Face
-from typing import Union
+from typing import Union, Dict
 
 def has_audio(video_path: str) -> bool:
     """Check if a video file has an audio stream."""
@@ -32,33 +32,32 @@ from typing import Union, Callable
 import threading
 
 def process_video(
-    source: Union[np.ndarray, Face], 
+    source: Union[np.ndarray, Face, Dict], 
     target_video_path: str, 
     output_video_path: str,
     progress_callback: Callable[[int, int, np.ndarray], None] = None,
-    cancel_event: threading.Event = None
+    cancel_event: threading.Event = None,
+    skip_existing: bool = True
 ):
     
     if not os.path.exists(target_video_path):
         raise FileNotFoundError(f"Target video not found: {target_video_path}")
         
-    # 1. Deterministic Job ID based on source, target, and processing options
-    source_id = str(id(source)) if isinstance(source, Face) else "ndarray"
-    if hasattr(state, "source_path") and state.source_path:
-        source_id = state.source_path
+    temp_dir = os.path.join(os.path.dirname(output_video_path), "temp")
+    
+    # Create a unique temp folder based on output filename
+    base_name = os.path.splitext(os.path.basename(output_video_path))[0]
+    session_temp_dir = os.path.join(temp_dir, base_name)
+    temp_frames_in_dir = os.path.join(session_temp_dir, "frames_in")
+    temp_frames_out_dir = os.path.join(session_temp_dir, "frames_out")
+    temp_audio = os.path.join(session_temp_dir, "audio.aac")
+    meta_json = os.path.join(session_temp_dir, "meta.json")
+    
+    # If not skipping existing (e.g. user wants to re-process with new params),
+    # clear the output frames directory so they are all re-rendered.
+    if not skip_existing and os.path.exists(temp_frames_out_dir):
+        shutil.rmtree(temp_frames_out_dir)
         
-    config_str = f"{source_id}_{target_video_path}_{state.processors}_{state.swap_model}_{state.swap_weight}_{state.mask_types}_{state.restore_model}_{state.restore_weight}"
-    job_hash = hashlib.md5(config_str.encode('utf-8')).hexdigest()
-    
-    project_temp_dir = ROOT_DIR / ".temp"
-    temp_dir = os.path.join(project_temp_dir, f"job_{job_hash}")
-    os.makedirs(temp_dir, exist_ok=True)
-    
-    temp_audio = os.path.join(temp_dir, "audio.aac")
-    temp_frames_in_dir = os.path.join(temp_dir, "frames_in")
-    temp_frames_out_dir = os.path.join(temp_dir, "frames_out")
-    meta_json = os.path.join(temp_dir, "meta.json")
-    
     os.makedirs(temp_frames_in_dir, exist_ok=True)
     os.makedirs(temp_frames_out_dir, exist_ok=True)
     
@@ -250,7 +249,7 @@ def process_video(
                 print("Temp files preserved for future resume. You can re-run the same command to continue.")
             else:
                 print("Cleaning up temp files...")
-                shutil.rmtree(temp_dir, ignore_errors=True)
+                shutil.rmtree(session_temp_dir, ignore_errors=True)
         else:
             print("Error: Merging video failed. Temp files are preserved for retry.")
             print(result.stderr)

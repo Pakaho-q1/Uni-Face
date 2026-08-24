@@ -6,6 +6,14 @@ from core.config import ROOT_DIR
 class StateManager:
     def __init__(self):
         self.providers = ["CPUExecutionProvider"]
+        
+        # Add ONNX SessionOptions to prevent thread thrashing
+        import onnxruntime
+        self.session_options = onnxruntime.SessionOptions()
+        # Limit CPU threads used by ONNX internal ops (1 or 2 is ideal when running concurrent pipelines)
+        self.session_options.intra_op_num_threads = 1
+        self.session_options.inter_op_num_threads = 1
+        
         self.processors = ["swap", "restore", "color"]
         self.execution_thread_count = 4
         self.video_encoder = "h264_nvenc"
@@ -22,7 +30,9 @@ class StateManager:
         self.source_path = None
         self.target_path = None
         self.output_path = None
-        self.similarity = False
+        self.mask_types: List[str] = ['box']
+        self.mask_regions: List[str] = ['skin', 'l_brow', 'r_brow', 'l_eye', 'r_eye', 'nose', 'mouth', 'u_lip', 'l_lip']
+        self.similarity: bool = False
 
     def init(self, parse_args=True):
         ini_path = ROOT_DIR / "uni-face.ini"

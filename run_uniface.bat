@@ -6,7 +6,7 @@ echo ===================================================
 echo.
 echo Launching Server...
 echo.
-
+cd /d "D:\WindowsMega\uni-face"
 call conda activate uniface
 python api_server.py
 

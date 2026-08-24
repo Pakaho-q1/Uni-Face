@@ -11,8 +11,8 @@ class MaskParser:
     """
     def __init__(self):
         self.providers = DEFAULT_EXECUTION_PROVIDERS
-        self.xseg_session = onnxruntime.InferenceSession(str(MODEL_PATHS["xseg_1"]), providers=self.providers)
-        self.bisenet_session = onnxruntime.InferenceSession(str(MODEL_PATHS["bisenet_resnet_34"]), providers=self.providers)
+        self.xseg_session = onnxruntime.InferenceSession(str(MODEL_PATHS["xseg_1"]), providers=self.providers, sess_options=state.session_options)
+        self.bisenet_session = onnxruntime.InferenceSession(str(MODEL_PATHS["bisenet_resnet_34"]), providers=self.providers, sess_options=state.session_options)
         
         # Region mappings for BiseNet
         self.region_mapping = {
@@ -47,39 +47,55 @@ class MaskParser:
         occlusion_mask = (cv2.GaussianBlur(occlusion_mask.clip(0, 1), (0, 0), 5).clip(0.5, 1) - 0.5) * 2
         return occlusion_mask
         
-    def create_region_mask(self, crop_vision_frame: np.ndarray, regions: List[str] = None) -> np.ndarray:
+    def create_region_mask(self, temp_vision_frame: np.ndarray, target_face, affine_matrix, crop_shape, regions: List[str] = None) -> np.ndarray:
         """
         Create a mask for specific facial regions using bisenet_resnet_34.
-        Default regions usually exclude hair and background to avoid pasting them.
+        BiseNet expects ffhq_512 alignment. We warp the full frame to ffhq_512,
+        segment, and then project the mask back to the requested crop space (e.g. arcface_128).
         """
         if regions is None:
-            # Default regions to keep (everything except hair, hat, cloth, background, etc)
-            regions = ['skin', 'l_brow', 'r_brow', 'l_eye', 'r_eye', 'nose', 'mouth', 'u_lip', 'l_lip']
+            from core.state import state
+            regions = state.mask_regions
             
-        model_size = (512, 512)
+        if target_face is None or affine_matrix is None:
+            return np.ones(crop_shape[:2], dtype=np.float32)
+            
+        from modules.utils import face_math
         
-        # Prepare tensor (expects NCHW, RGB, normalized with mean/std)
-        prepare_vision_frame = cv2.resize(crop_vision_frame, model_size)
-        prepare_vision_frame = prepare_vision_frame[:, :, ::-1].astype(np.float32) / 255.0
+        # 1. Warp full frame to ffhq_512
+        model_size = (512, 512)
+        ffhq_crop, ffhq_matrix = face_math.warp_face_by_face_landmark_5(
+            temp_vision_frame, target_face.landmark_5, 'ffhq_512', model_size
+        )
+        
+        # 2. Prepare tensor (expects NCHW, RGB, normalized with mean/std)
+        prepare_vision_frame = ffhq_crop[:, :, ::-1].astype(np.float32) / 255.0
         prepare_vision_frame = np.subtract(prepare_vision_frame, np.array([0.485, 0.456, 0.406], dtype=np.float32))
         prepare_vision_frame = np.divide(prepare_vision_frame, np.array([0.229, 0.224, 0.225], dtype=np.float32))
         
         prepare_vision_frame = np.expand_dims(prepare_vision_frame, axis=0)
         prepare_vision_frame = prepare_vision_frame.transpose(0, 3, 1, 2)
         
-        # Run Inference
+        # 3. Run Inference
         region_prediction = self.bisenet_session.run(None, {self.bisenet_session.get_inputs()[0].name: prepare_vision_frame})[0][0]
         
-        # Output is (19, 512, 512) representing logits per class. argmax(0) gives (512, 512) with class indices.
+        # Output is (19, 512, 512)
         class_indices = region_prediction.argmax(axis=0)
-        
-        # Filter selected regions
         target_indices = [self.region_mapping[r] for r in regions if r in self.region_mapping]
-        region_mask = np.isin(class_indices, target_indices).astype(np.float32)
+        ffhq_mask = np.isin(class_indices, target_indices).astype(np.float32)
         
-        region_mask = cv2.resize(region_mask, crop_vision_frame.shape[:2][::-1])
-        region_mask = (cv2.GaussianBlur(region_mask.clip(0, 1), (0, 0), 5).clip(0.5, 1) - 0.5) * 2
-        return region_mask
+        # 4. Project ffhq_mask back to full frame
+        box_mask, paste_matrix = face_math.calculate_paste_area(temp_vision_frame, ffhq_crop, ffhq_matrix)
+        x1, y1, x2, y2 = box_mask
+        full_mask = np.zeros(temp_vision_frame.shape[:2], dtype=np.float32)
+        inverse_mask = cv2.warpAffine(ffhq_mask, paste_matrix, (x2 - x1, y2 - y1), flags=cv2.INTER_LINEAR)
+        full_mask[y1:y2, x1:x2] = inverse_mask
+        
+        # 5. Project full frame mask to the target crop space (e.g. arcface_128)
+        crop_mask = cv2.warpAffine(full_mask, affine_matrix, (crop_shape[1], crop_shape[0]), flags=cv2.INTER_LINEAR)
+        
+        crop_mask = (cv2.GaussianBlur(crop_mask.clip(0, 1), (0, 0), 5).clip(0.5, 1) - 0.5) * 2
+        return crop_mask
         
     def create_box_mask(self, crop_vision_frame: np.ndarray, padding: List[int] = [0, 0, 0, 0], blur: float = 0.3) -> np.ndarray:
         """
@@ -136,7 +152,7 @@ class MaskParser:
         mask = np.clip(mask, 0.0, 1.0)
         return mask
 
-    def get_combined_mask(self, crop_vision_frame: np.ndarray, mask_types: List[str] = None, target_face = None, affine_matrix = None) -> np.ndarray:
+    def get_combined_mask(self, temp_vision_frame: np.ndarray, crop_vision_frame: np.ndarray, mask_types: List[str] = None, target_face = None, affine_matrix = None) -> np.ndarray:
         """
         Match FaceFusion exactly: dynamically reduce enabled mask types.
         FaceFusion default is ['box'].
@@ -153,7 +169,7 @@ class MaskParser:
             crop_masks.append(self.create_occlusion_mask(crop_vision_frame))
             
         if 'region' in mask_types:
-            crop_masks.append(self.create_region_mask(crop_vision_frame))
+            crop_masks.append(self.create_region_mask(temp_vision_frame, target_face, affine_matrix, crop_vision_frame.shape))
             
         if not crop_masks:
             combined_mask = np.ones(crop_vision_frame.shape[:2], dtype=np.float32)
@@ -170,5 +186,5 @@ class MaskParser:
 # Export a default instance
 parser_app = MaskParser()
 
-def get_combined_mask(crop_vision_frame: np.ndarray, mask_types: List[str] = None, target_face = None, affine_matrix = None) -> np.ndarray:
-    return parser_app.get_combined_mask(crop_vision_frame, mask_types, target_face, affine_matrix)
+def get_combined_mask(temp_vision_frame: np.ndarray, crop_vision_frame: np.ndarray, mask_types: List[str] = None, target_face = None, affine_matrix = None) -> np.ndarray:
+    return parser_app.get_combined_mask(temp_vision_frame, crop_vision_frame, mask_types, target_face, affine_matrix)

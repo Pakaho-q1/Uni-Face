@@ -5,6 +5,9 @@ import uuid
 import shutil
 import cv2
 import base64
+import hashlib
+import json
+import queue
 from typing import Dict, Any, Optional
 
 from fastapi import FastAPI, UploadFile, File, Form, Header, HTTPException, WebSocket, WebSocketDisconnect
@@ -21,6 +24,13 @@ if sys.platform == 'win32':
     trt_path = os.path.join(sys.prefix, 'Lib', 'site-packages', 'tensorrt_libs')
     if os.path.exists(trt_path):
         os.environ['PATH'] = trt_path + os.pathsep + os.environ.get('PATH', '')
+
+# --- Disable BLAS/OMP threading to prevent CPU thrashing during multi-thread processing ---
+os.environ["OMP_NUM_THREADS"] = "1"
+os.environ["OPENBLAS_NUM_THREADS"] = "1"
+os.environ["MKL_NUM_THREADS"] = "1"
+os.environ["VECLIB_MAXIMUM_THREADS"] = "1"
+os.environ["NUMEXPR_NUM_THREADS"] = "1"
 
 # Ensure we can import core modules
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
@@ -55,8 +65,11 @@ def get_platform_dir(platform: str) -> str:
 def ensure_workspace(platform: str):
     p_dir = get_platform_dir(platform)
     uploads_dir = os.path.join(p_dir, "uploads")
+    source_dir = os.path.join(uploads_dir, "source")
+    target_dir = os.path.join(uploads_dir, "target")
     outputs_dir = os.path.join(p_dir, "outputs")
-    os.makedirs(uploads_dir, exist_ok=True)
+    os.makedirs(source_dir, exist_ok=True)
+    os.makedirs(target_dir, exist_ok=True)
     os.makedirs(outputs_dir, exist_ok=True)
     return uploads_dir, outputs_dir
 
@@ -66,6 +79,29 @@ class JobManager:
         self.jobs: Dict[str, Dict[str, Any]] = {}
         self.cancel_events: Dict[str, threading.Event] = {}
         self.active_websockets: Dict[str, WebSocket] = {}
+        self.job_queue = queue.Queue()
+        self.jobs_file = os.path.join(WORKSPACE_DIR, "jobs.json")
+        self.load_jobs()
+        
+    def load_jobs(self):
+        if os.path.exists(self.jobs_file):
+            try:
+                with open(self.jobs_file, "r", encoding="utf-8") as f:
+                    self.jobs = json.load(f)
+                    # Reset stuck jobs to failed if server restarted while processing
+                    for j_id, j_data in self.jobs.items():
+                        if j_data["status"] in ["processing", "pending"]:
+                            j_data["status"] = "failed"
+                            j_data["error"] = "Server restarted during processing"
+            except Exception as e:
+                print(f"Error loading jobs: {e}")
+                
+    def save_jobs(self):
+        try:
+            with open(self.jobs_file, "w", encoding="utf-8") as f:
+                json.dump(self.jobs, f, indent=4)
+        except Exception as e:
+            print(f"Error saving jobs: {e}")
 
     def create_job(self, platform: str) -> str:
         job_id = str(uuid.uuid4())
@@ -81,11 +117,13 @@ class JobManager:
             "error": None
         }
         self.cancel_events[job_id] = threading.Event()
+        self.save_jobs()
         return job_id
 
     def update_job(self, job_id: str, updates: Dict[str, Any]):
         if job_id in self.jobs:
             self.jobs[job_id].update(updates)
+            self.save_jobs()
             
     def get_job(self, job_id: str) -> Optional[Dict[str, Any]]:
         return self.jobs.get(job_id)
@@ -93,6 +131,14 @@ class JobManager:
     def cancel_job(self, job_id: str):
         if job_id in self.cancel_events:
             self.cancel_events[job_id].set()
+            self.update_job(job_id, {"status": "failed", "error": "Cancelled by user"})
+            
+    def get_active_job_for_platform(self, platform: str) -> Optional[Dict[str, Any]]:
+        # Returns the most recent pending or processing job for this platform
+        for job_id, job in reversed(self.jobs.items()):
+            if job["platform"] == platform and job["status"] in ["pending", "processing"]:
+                return job
+        return None
 
 job_manager = JobManager()
 
@@ -100,17 +146,33 @@ job_manager = JobManager()
 @app.post("/api/v1/upload")
 async def upload_files(
     files: list[UploadFile] = File(...),
+    type: str = Form("source"),
     x_client_platform: str = Header("unknown")
 ):
     uploads_dir, _ = ensure_workspace(x_client_platform)
+    
+    # Validation
+    if type not in ["source", "target"]:
+        type = "target"
+        
+    target_folder = os.path.join(uploads_dir, type)
     results = []
     
     for file in files:
-        file_id = f"{uuid.uuid4().hex[:8]}_{file.filename}"
-        file_path = os.path.join(uploads_dir, file_id)
+        # Read content to hash
+        content = await file.read()
         
-        with open(file_path, "wb") as buffer:
-            shutil.copyfileobj(file.file, buffer)
+        # Calculate MD5
+        md5_hash = hashlib.md5(content).hexdigest()
+        _, ext = os.path.splitext(file.filename)
+        
+        file_id = f"{type}/{md5_hash}{ext}"
+        file_path = os.path.join(target_folder, f"{md5_hash}{ext}")
+        
+        # Only write if it doesn't exist
+        if not os.path.exists(file_path):
+            with open(file_path, "wb") as buffer:
+                buffer.write(content)
             
         results.append({"file_id": file_id, "filename": file.filename})
         
@@ -118,6 +180,7 @@ async def upload_files(
 
 
 class JobStartRequest(BaseModel):
+    source_type: str = "image"
     source_file_id: str
     target_file_ids: list[str]
     preview_frequency: int = 15
@@ -129,8 +192,10 @@ class JobStartRequest(BaseModel):
     restore_weight: float = 1.0
     restore_blend: int = 100
     mask_types: list[str] = ["box"]
+    mask_regions: list[str] = ['skin', 'l_brow', 'r_brow', 'l_eye', 'r_eye', 'nose', 'mouth', 'u_lip', 'l_lip']
     similarity: bool = False
     providers: list[str] = ["cpu"]
+    skip_existing: bool = True
 
 def run_job_background(job_id: str, req: JobStartRequest, x_client_platform: str):
     uploads_dir, outputs_dir = ensure_workspace(x_client_platform)
@@ -146,37 +211,55 @@ def run_job_background(job_id: str, req: JobStartRequest, x_client_platform: str
     state.restore_weight = req.restore_weight
     state.restore_blend = req.restore_blend
     state.mask_types = req.mask_types
+    state.mask_regions = req.mask_regions
     state.similarity = req.similarity
     if hasattr(state, "_parse_providers"):
         state._parse_providers(" ".join(req.providers))
     state.source_path = source_path
     
+    
     try:
-        from modules.detector import detect
-        source_img = cv2.imread(source_path)
-        if source_img is None:
-            raise Exception("Could not read source image")
-            
-        source_faces = detect(source_img)
-        if not source_faces:
-            raise Exception("No face detected in source image")
-            
-        source_faces.sort(key=lambda x: (x.bbox[2]-x.bbox[0])*(x.bbox[3]-x.bbox[1]), reverse=True)
-        source_face = source_faces[0]
+        if req.source_type == "model":
+            # Load the face model
+            from core.face_model import load_face_model
+            source_face = load_face_model(req.source_file_id, get_platform_dir(x_client_platform))
+        else:
+            from modules.detector import detect
+            source_img = cv2.imread(source_path)
+            if source_img is None:
+                raise Exception("Could not read source image")
+                
+            source_faces = detect(source_img)
+            if not source_faces:
+                raise Exception("No face detected in source image")
+                
+            source_faces.sort(key=lambda x: (x.bbox[2]-x.bbox[0])*(x.bbox[3]-x.bbox[1]), reverse=True)
+            source_face = source_faces[0]
         
         total_targets = len(req.target_file_ids)
+        print(f"Starting job {job_id} with {total_targets} target files: {req.target_file_ids}")
         last_output_path = None
         
         for idx, target_id in enumerate(req.target_file_ids):
+            print(f"Processing target {idx + 1}/{total_targets}: {target_id}")
             if cancel_event.is_set():
                 break
                 
             target_path = os.path.join(uploads_dir, target_id)
+            target_basename = os.path.basename(target_id)
+            source_basename = os.path.basename(req.source_file_id)
             import mimetypes
             mime_type, _ = mimetypes.guess_type(target_path)
             is_image = mime_type and mime_type.startswith('image')
             
-            out_name = f"out_{target_id}"
+            target_name, _ = os.path.splitext(target_basename)
+            source_name, _ = os.path.splitext(source_basename)
+            
+            # Shorten the names a bit to avoid extremely long paths
+            out_name = f"out_{source_name[:8]}_{target_name[:8]}"
+            if not req.skip_existing:
+                out_name += f"_{uuid.uuid4().hex[:6]}"
+                
             if is_image:
                 ext = os.path.splitext(target_path)[1] or '.jpg'
                 out_name += ext
@@ -218,25 +301,74 @@ def run_job_background(job_id: str, req: JobStartRequest, x_client_platform: str
                     cv2.imwrite(output_path, processed_img)
                     progress_callback(1, 1, processed_img)
             else:
-                process_video(source_face, target_path, output_path, progress_callback=progress_callback, cancel_event=cancel_event)
+                process_video(source_face, target_path, output_path, progress_callback=progress_callback, cancel_event=cancel_event, skip_existing=req.skip_existing)
                 
-            # Cleanup target
+        if not cancel_event.is_set():
+            job_manager.update_job(job_id, {"status": "completed", "progress": 100.0, "output_path": last_output_path})
+            
+        # Cleanup targets
+        for target_id in set(req.target_file_ids):
+            target_path = os.path.join(uploads_dir, target_id)
             try:
                 os.remove(target_path)
             except:
                 pass
-                
-        if not cancel_event.is_set():
-            job_manager.update_job(job_id, {"status": "completed", "progress": 100.0, "output_path": last_output_path})
         
-        # Cleanup source
-        try:
-            os.remove(source_path)
-        except:
-            pass
+        # Cleanup source if it's an uploaded image
+        if req.source_type == "image":
+            try:
+                os.remove(source_path)
+            except:
+                pass
             
     except Exception as e:
         job_manager.update_job(job_id, {"status": "failed", "error": str(e)})
+
+# --- FACE MODELS API ---
+@app.get("/api/v1/face-models")
+async def list_face_models(x_client_platform: str = Header("unknown")):
+    platform_dir = get_platform_dir(x_client_platform)
+    models_dir = os.path.join(platform_dir, "face_models")
+    if not os.path.exists(models_dir):
+        return {"models": []}
+    
+    models = []
+    for f in os.listdir(models_dir):
+        if f.endswith(".safetensors"):
+            models.append({"name": f})
+    return {"models": models}
+
+@app.post("/api/v1/face-models/build")
+async def build_face_model(
+    name: str = Form(...),
+    files: list[UploadFile] = File(...),
+    x_client_platform: str = Header("unknown")
+):
+    platform_dir = get_platform_dir(x_client_platform)
+    from core.face_model import save_face_model
+    from modules.detector import detect
+    
+    faces = []
+    for file in files:
+        content = await file.read()
+        nparr = np.frombuffer(content, np.uint8)
+        img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+        if img is not None:
+            detected = detect(img)
+            if detected:
+                # Get the largest face
+                detected.sort(key=lambda x: (x.bbox[2]-x.bbox[0])*(x.bbox[3]-x.bbox[1]), reverse=True)
+                faces.append(detected[0])
+                
+    if not faces:
+        raise HTTPException(status_code=400, detail="No faces detected in the provided images.")
+        
+    try:
+        filepath = save_face_model(name, faces, platform_dir)
+        return {"status": "success", "model_name": os.path.basename(filepath), "faces_extracted": len(faces)}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 
 @app.post("/api/v1/jobs")
@@ -246,11 +378,41 @@ async def create_job(
 ):
     job_id = job_manager.create_job(x_client_platform)
     
-    t = threading.Thread(target=run_job_background, args=(job_id, req, x_client_platform))
-    t.daemon = True
-    t.start()
+    # Enqueue job instead of starting a new thread immediately
+    job_manager.job_queue.put((job_id, req, x_client_platform))
     
     return {"job_id": job_id, "status": "pending"}
+
+# Background Worker Thread
+def worker_loop():
+    while True:
+        try:
+            job_id, req, x_client_platform = job_manager.job_queue.get()
+            job = job_manager.get_job(job_id)
+            
+            # Skip if cancelled while in queue
+            if job and job.get("status") == "failed" and job.get("error") == "Cancelled by user":
+                job_manager.job_queue.task_done()
+                continue
+                
+            run_job_background(job_id, req, x_client_platform)
+            job_manager.job_queue.task_done()
+        except Exception as e:
+            print(f"Worker loop error: {e}")
+
+# Start the worker thread
+worker_thread = threading.Thread(target=worker_loop, daemon=True)
+worker_thread.start()
+
+@app.get("/api/v1/jobs/active")
+async def get_active_job(x_client_platform: str = Header("unknown")):
+    job = job_manager.get_active_job_for_platform(x_client_platform)
+    if not job:
+        return {"job_id": None}
+    
+    resp = job.copy()
+    resp.pop("preview_image", None)
+    return {"job_id": job["id"], "job": resp}
 
 @app.get("/api/v1/jobs/{job_id}")
 async def get_job_status(job_id: str):
@@ -297,7 +459,8 @@ async def download_job(job_id: str):
     return FileResponse(output_path, media_type=media_type, filename=os.path.basename(output_path))
 
 class DeleteHistoryRequest(BaseModel):
-    filenames: list[str]
+    filenames: list[str] = []
+    delete_all: bool = False
 
 class DownloadHistoryRequest(BaseModel):
     filenames: list[str]
@@ -338,16 +501,28 @@ async def serve_history_file(filename: str, platform: str = "unknown"):
 async def delete_history(req: DeleteHistoryRequest, x_client_platform: str = Header("unknown")):
     _, outputs_dir = ensure_workspace(x_client_platform)
     deleted = 0
-    for f in req.filenames:
-        # Prevent directory traversal
-        safe_f = os.path.basename(f)
-        path = os.path.join(outputs_dir, safe_f)
-        if os.path.exists(path):
-            try:
-                os.remove(path)
-                deleted += 1
-            except:
-                pass
+    
+    if req.delete_all:
+        if os.path.exists(outputs_dir):
+            for f in os.listdir(outputs_dir):
+                path = os.path.join(outputs_dir, f)
+                if os.path.isfile(path):
+                    try:
+                        os.remove(path)
+                        deleted += 1
+                    except:
+                        pass
+    else:
+        for f in req.filenames:
+            # Prevent directory traversal
+            safe_f = os.path.basename(f)
+            path = os.path.join(outputs_dir, safe_f)
+            if os.path.exists(path):
+                try:
+                    os.remove(path)
+                    deleted += 1
+                except:
+                    pass
     return {"deleted": deleted}
 
 import zipfile
@@ -403,7 +578,8 @@ async def websocket_job_status(websocket: WebSocket, job_id: str):
                 
             await asyncio.sleep(0.5)
     except WebSocketDisconnect:
-        pass
+        # User disconnected, but we let the job continue in the background
+        print(f"Client disconnected. Job {job_id} will continue in background.")
     finally:
         if job_id in job_manager.active_websockets:
             del job_manager.active_websockets[job_id]

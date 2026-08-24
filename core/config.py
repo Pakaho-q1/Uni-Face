@@ -26,6 +26,8 @@ MODEL_PATHS = {
     "codeformer": MODELS_DIR / "codeformer.onnx",
     "gpen_bfr_256": MODELS_DIR / "gpen_bfr_256.onnx",
     "gpen_bfr_512": MODELS_DIR / "gpen_bfr_512.onnx",
+    "gpen_bfr_1024": MODELS_DIR / "GPEN-BFR-1024.onnx",
+    "restoreformer_plus_plus": MODELS_DIR / "RestoreFormerPlusPlus.onnx",
     "ffmpeg": MODELS_DIR / "ffmpeg.exe"
 }
 

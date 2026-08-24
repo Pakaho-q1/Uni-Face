@@ -5,13 +5,14 @@ from core.state import state
 import threading
 
 swapper_app = None
+current_swap_model = None
 _lock = threading.Lock()
 
 def get_swapper():
-    global swapper_app
-    if swapper_app is None:
+    global swapper_app, current_swap_model
+    if swapper_app is None or current_swap_model != state.swap_model:
         with _lock:
-            if swapper_app is None:
+            if swapper_app is None or current_swap_model != state.swap_model:
                 model_key = state.swap_model
                 if 'hyperswap' in model_key:
                     from modules.swaper.hyperswap import Hyperswap
@@ -19,6 +20,7 @@ def get_swapper():
                 else:
                     from modules.swaper.inswapper import Inswapper
                     swapper_app = Inswapper()
+                current_swap_model = model_key
     return swapper_app
 
 def swap(source_face: Face, target_face: Face, frame: np.ndarray) -> np.ndarray:

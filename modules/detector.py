@@ -16,9 +16,9 @@ class NativeDetector:
     def __init__(self):
         # 1. Initialize ONNX Sessions directly from our paths
         self.providers = state.providers
-        self.yoloface_session = onnxruntime.InferenceSession(str(MODEL_PATHS["yoloface"]), providers=self.providers)
-        self.fan_session = onnxruntime.InferenceSession(str(MODEL_PATHS["2dfan4"]), providers=self.providers)
-        self.arcface_session = onnxruntime.InferenceSession(str(MODEL_PATHS["arcface"]), providers=self.providers)
+        self.yoloface_session = onnxruntime.InferenceSession(str(MODEL_PATHS["yoloface"]), providers=self.providers, sess_options=state.session_options)
+        self.fan_session = onnxruntime.InferenceSession(str(MODEL_PATHS["2dfan4"]), providers=self.providers, sess_options=state.session_options)
+        self.arcface_session = onnxruntime.InferenceSession(str(MODEL_PATHS["arcface"]), providers=self.providers, sess_options=state.session_options)
         
         # Configuration
         self.face_detector_size = (640, 640)
