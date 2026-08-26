@@ -9,17 +9,30 @@ import numpy as np
 import hashlib
 import json
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 
-from core.service import process_image
-from core.config import ROOT_DIR
-from core.state import state
-from core.types import Face
+from uniface.core.service import process_image
+from uniface.core.config import ROOT_DIR, MODEL_PATHS
+from uniface.core.state import state
+from uniface.core.types import Face
 from typing import Union, Dict
+
+# Use bundled ffmpeg/ffprobe when available; fall back to system PATH binaries.
+# MODEL_PATHS["ffmpeg"] points to models/ffmpeg.exe on Windows.
+_bundled_ffmpeg = Path(str(MODEL_PATHS.get("ffmpeg", "")))
+if _bundled_ffmpeg.exists():
+    FFMPEG_BIN = str(_bundled_ffmpeg)
+    # ffprobe lives alongside ffmpeg in the same directory
+    _ffprobe_candidate = _bundled_ffmpeg.parent / (_bundled_ffmpeg.stem.replace("ffmpeg", "ffprobe") + _bundled_ffmpeg.suffix)
+    FFPROBE_BIN = str(_ffprobe_candidate) if _ffprobe_candidate.exists() else "ffprobe"
+else:
+    FFMPEG_BIN = "ffmpeg"
+    FFPROBE_BIN = "ffprobe"
 
 def has_audio(video_path: str) -> bool:
     """Check if a video file has an audio stream."""
     cmd = [
-        "ffprobe", 
+        FFPROBE_BIN, 
         "-i", video_path, 
         "-show_streams", 
         "-select_streams", "a", 
@@ -27,6 +40,7 @@ def has_audio(video_path: str) -> bool:
     ]
     result = subprocess.run(cmd, capture_output=True, text=True)
     return len(result.stdout.strip()) > 0
+
 
 from typing import Union, Callable
 import threading
@@ -68,21 +82,21 @@ def process_video(
         if audio_exists and not os.path.exists(temp_audio):
             print("Extracting audio from target video...")
             subprocess.run([
-                "ffmpeg", "-y", "-i", target_video_path,
+                FFMPEG_BIN, "-y", "-i", target_video_path,
                 "-vn", "-acodec", "copy", temp_audio
             ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             
             # Fallback if original audio codec can't be copied directly to .aac
             if not os.path.exists(temp_audio) or os.path.getsize(temp_audio) == 0:
                  subprocess.run([
-                    "ffmpeg", "-y", "-i", target_video_path,
+                    FFMPEG_BIN, "-y", "-i", target_video_path,
                     "-vn", "-c:a", "aac", temp_audio
                 ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 
         # 2. Get/Detect source face ONCE
         if isinstance(source, np.ndarray):
             print("Detecting source face...")
-            from modules.detector import detect
+            from uniface.modules.detector import detect
             source_faces = detect(source)
             if not source_faces:
                 print("Error: No source face detected!")
@@ -113,7 +127,7 @@ def process_video(
         if need_extract:
             print("Extracting frames from target video...")
             extract_cmd = [
-                "ffmpeg", "-y", "-i", target_video_path,
+                FFMPEG_BIN, "-y", "-i", target_video_path,
                 "-q:v", "2",
                 os.path.join(temp_frames_in_dir, "%06d.jpg")
             ]
@@ -157,52 +171,85 @@ def process_video(
                 if warmup_img is not None:
                     _ = process_image(source_face, warmup_img, verbose=False)
             
-            def process_frame(frame_file):
-                in_path = os.path.join(temp_frames_in_dir, frame_file)
-                out_path = os.path.join(temp_frames_out_dir, frame_file)
-                
-                # Double check if processed
-                if os.path.exists(out_path):
-                    # Clean up in_path if it somehow still exists
-                    if os.path.exists(in_path):
-                        try: os.remove(in_path)
-                        except: pass
-                    return
-                    
-                if not os.path.exists(in_path):
-                    return
-                    
-                frame = cv2.imread(in_path)
-                if frame is not None:
-                    processed_frame = process_image(source_face, frame, verbose=False)
-                    cv2.imwrite(out_path, processed_frame)
-                    
-                    # Auto-delete input frame to save disk space
-                    try:
-                        os.remove(in_path)
-                    except Exception as e:
-                        pass
-                        
-                    # Call progress callback if provided
-                    if progress_callback:
-                        # Find current processed count for callback (approximate via os.listdir is slow, 
-                        # better to use a shared counter, but for simplicity we can just rely on the ThreadPool executing)
-                        # Actually, counting frames_out is safe
-                        try:
-                            c = len(os.listdir(temp_frames_out_dir))
-                            progress_callback(c, total_frames, processed_frame)
-                        except: pass
-                        
-                    # Check for cancel event
-                    if cancel_event and cancel_event.is_set():
-                        raise KeyboardInterrupt("Cancelled via API")
-                        
             interrupted = False
             try:
-                with ThreadPoolExecutor(max_workers=state.execution_thread_count) as executor:
-                    list(tqdm(executor.map(process_frame, pending_frames), total=len(pending_frames), desc="Frames"))
+                from uniface.core.swarm import SwarmEngine
+                import queue
+                import threading
+                
+                engine = SwarmEngine(max_workers=state.execution_thread_count, queue_size=15)
+                engine.start()
+
+                # Feeder thread
+                def feed_frames():
+                    for frame_file in pending_frames:
+                        if engine.abort_event.is_set():
+                            break
+                        in_path = os.path.join(temp_frames_in_dir, frame_file)
+                        if os.path.exists(in_path):
+                            frame = cv2.imread(in_path)
+                            if frame is not None:
+                                engine.queues["detect"].put((frame_file, source_face, frame))
+                    # Poison pills to shut down all detect workers
+                    for _ in range(engine.max_workers):
+                        engine.queues["detect"].put(None)
+
+                feeder_thread = threading.Thread(target=feed_frames, daemon=True)
+                feeder_thread.start()
+
+                # Collector loop
+                with tqdm(total=len(pending_frames), desc="Frames (Swarm)") as pbar:
+                    nones_received = 0
+                    while nones_received < engine.max_workers:
+                        if cancel_event and cancel_event.is_set():
+                            raise KeyboardInterrupt("Cancelled via API")
+                            
+                        try:
+                            result = engine.queues["out"].get(timeout=0.5)
+                        except queue.Empty:
+                            if not feeder_thread.is_alive() and engine.queues["out"].empty():
+                                # Check if any active threads are deadlocked or still processing
+                                pass
+                            continue
+                            
+                        if result is None:
+                            nones_received += 1
+                            engine.queues["out"].task_done()
+                            continue
+                            
+                        frame_file, res_frame = result
+                        out_path = os.path.join(temp_frames_out_dir, frame_file)
+                        in_path = os.path.join(temp_frames_in_dir, frame_file)
+                        cv2.imwrite(out_path, res_frame)
+                        try:
+                            os.remove(in_path)
+                        except Exception:
+                            pass
+                            
+                        pbar.update(1)
+                        
+                        # Update Swarm Tuner Metrics
+                        d_act, d_q = engine.stage_active["detect"], engine.queues["detect"].qsize()
+                        s_act, s_q = engine.stage_active["swap"], engine.queues["swap"].qsize()
+                        r_act, r_q = engine.stage_active["restore"], engine.queues["restore"].qsize()
+                        c_act, c_q = engine.stage_active["color"], engine.queues["color"].qsize()
+                        pbar.set_postfix_str(f"D:{d_act}/{d_q} S:{s_act}/{s_q} R:{r_act}/{r_q} C:{c_act}/{c_q}")
+                        
+                        if progress_callback:
+                            try:
+                                c = len(os.listdir(temp_frames_out_dir))
+                                progress_callback(c, total_frames, res_frame)
+                            except: pass
+                            
+                        engine.queues["out"].task_done()
+                        
+                feeder_thread.join()
+                engine.stop()
+                
             except KeyboardInterrupt:
                 interrupted = True
+                if 'engine' in locals():
+                    engine.stop()
                 print("\n[!] Processing interrupted by user (Ctrl+C).")
                 print("Generating partial video from completed frames...")
                 
@@ -220,7 +267,7 @@ def process_video(
             print(f"Saving partial output to: {final_output_path}")
 
         merge_cmd = [
-            "ffmpeg", "-y", 
+            FFMPEG_BIN, "-y", 
             "-framerate", str(fps),
             "-i", os.path.join(temp_frames_out_dir, "%06d.jpg")
         ]

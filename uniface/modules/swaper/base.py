@@ -1,6 +1,6 @@
 from abc import ABC, abstractmethod
 import numpy as np
-from core.types import Face
+from uniface.core.types import Face
 
 class BaseSwaper(ABC):
     """

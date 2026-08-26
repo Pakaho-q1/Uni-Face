@@ -1,13 +1,13 @@
 import numpy as np
 import cv2
 from typing import Union, Dict
-from core.types import Face
+from uniface.core.types import Face
 
-from core.state import state
-from modules.detector import detect
-from modules.swaper.swap import swap
-from modules.restorer import restore
-from modules.compositor import composite
+from uniface.core.state import state
+from uniface.modules.detector import detect
+from uniface.modules.swaper.swap import swap
+from uniface.modules.restorer import restore
+from uniface.modules.compositor import composite
 
 class FaceService:
     def __init__(self):

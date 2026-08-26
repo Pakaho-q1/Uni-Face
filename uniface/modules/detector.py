@@ -3,10 +3,10 @@ import numpy as np
 import onnxruntime
 from typing import List, Tuple
 
-from core.types import Face
-from core.config import MODEL_PATHS
-from core.state import state
-from modules.utils import face_math
+from uniface.core.types import Face
+from uniface.core.config import MODEL_PATHS
+from uniface.core.state import state
+from uniface.modules.utils import face_math
 
 class NativeDetector:
     """
@@ -17,8 +17,11 @@ class NativeDetector:
         # 1. Initialize ONNX Sessions directly from our paths
         self.providers = state.providers
         self.yoloface_session = onnxruntime.InferenceSession(str(MODEL_PATHS["yoloface"]), providers=self.providers, sess_options=state.session_options)
+        print(f"[yoloface] Active Providers: {self.yoloface_session.get_providers()}")
         self.fan_session = onnxruntime.InferenceSession(str(MODEL_PATHS["2dfan4"]), providers=self.providers, sess_options=state.session_options)
+        print(f"[2dfan4] Active Providers: {self.fan_session.get_providers()}")
         self.arcface_session = onnxruntime.InferenceSession(str(MODEL_PATHS["arcface"]), providers=self.providers, sess_options=state.session_options)
+        print(f"[arcface] Active Providers: {self.arcface_session.get_providers()}")
         
         # Configuration
         self.face_detector_size = (640, 640)

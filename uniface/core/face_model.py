@@ -1,7 +1,7 @@
 import os
 import numpy as np
 from safetensors.numpy import save_file, load_file
-from core.types import Face
+from uniface.core.types import Face
 
 def save_face_model(name: str, faces: list[Face], workspace_dir: str):
     """

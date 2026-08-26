@@ -1,5 +1,7 @@
 import os
+import re
 import sys
+import time
 import asyncio
 import uuid
 import shutil
@@ -24,6 +26,21 @@ if sys.platform == 'win32':
     trt_path = os.path.join(sys.prefix, 'Lib', 'site-packages', 'tensorrt_libs')
     if os.path.exists(trt_path):
         os.environ['PATH'] = trt_path + os.pathsep + os.environ.get('PATH', '')
+        
+    # Silence asyncio Proactor connection reset errors (WinError 10054) on websocket disconnect
+    from functools import wraps
+    from asyncio.proactor_events import _ProactorBasePipeTransport
+    
+    def silence_event_loop_closed(func):
+        @wraps(func)
+        def wrapper(self, *args, **kwargs):
+            try:
+                return func(self, *args, **kwargs)
+            except (ConnectionResetError, RuntimeError):
+                pass
+        return wrapper
+        
+    _ProactorBasePipeTransport._call_connection_lost = silence_event_loop_closed(_ProactorBasePipeTransport._call_connection_lost)
 
 # --- Disable BLAS/OMP threading to prevent CPU thrashing during multi-thread processing ---
 os.environ["OMP_NUM_THREADS"] = "1"
@@ -32,12 +49,12 @@ os.environ["MKL_NUM_THREADS"] = "1"
 os.environ["VECLIB_MAXIMUM_THREADS"] = "1"
 os.environ["NUMEXPR_NUM_THREADS"] = "1"
 
-# Ensure we can import core modules
+# Ensure we can import uniface.core modules
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
-from core.state import state
-from core.video_service import process_video
-from core.service import process_image
+from uniface.core.state import state
+from uniface.core.video_service import process_video
+from uniface.core.service import process_image
 
 app = FastAPI(title="Uni-Face API", version="1.0.0")
 
@@ -59,7 +76,8 @@ WORKSPACE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "worksp
 
 def get_platform_dir(platform: str) -> str:
     if not platform: platform = "unknown"
-    platform = platform.lower().replace(r'[^a-z0-9]', '_')
+    # Use re.sub — str.replace() does not interpret regex patterns
+    platform = re.sub(r'[^a-z0-9_]', '_', platform.lower())
     return os.path.join(WORKSPACE_DIR, platform)
 
 def ensure_workspace(platform: str):
@@ -75,12 +93,19 @@ def ensure_workspace(platform: str):
 
 # --- JOB MANAGER ---
 class JobManager:
+    # Status changes that must be saved immediately (not debounced)
+    _IMMEDIATE_SAVE_KEYS = {"status", "error", "output_path"}
+    # Minimum seconds between debounced (progress) saves
+    _SAVE_DEBOUNCE_SECS = 5.0
+
     def __init__(self):
         self.jobs: Dict[str, Dict[str, Any]] = {}
         self.cancel_events: Dict[str, threading.Event] = {}
         self.active_websockets: Dict[str, WebSocket] = {}
         self.job_queue = queue.Queue()
         self.jobs_file = os.path.join(WORKSPACE_DIR, "jobs.json")
+        self._save_lock = threading.Lock()
+        self._last_save_time: float = 0.0
         self.load_jobs()
         
     def load_jobs(self):
@@ -96,12 +121,23 @@ class JobManager:
             except Exception as e:
                 print(f"Error loading jobs: {e}")
                 
-    def save_jobs(self):
-        try:
-            with open(self.jobs_file, "w", encoding="utf-8") as f:
-                json.dump(self.jobs, f, indent=4)
-        except Exception as e:
-            print(f"Error saving jobs: {e}")
+    def save_jobs(self, force: bool = False):
+        """Write jobs to disk.
+        
+        If force=True, always writes immediately (used for status changes).
+        Otherwise debounces: skips write if last save was < _SAVE_DEBOUNCE_SECS ago.
+        This avoids hammering the disk with one write per video frame.
+        """
+        now = time.monotonic()
+        if not force and (now - self._last_save_time) < self._SAVE_DEBOUNCE_SECS:
+            return
+        with self._save_lock:
+            try:
+                with open(self.jobs_file, "w", encoding="utf-8") as f:
+                    json.dump(self.jobs, f, indent=4)
+                self._last_save_time = time.monotonic()
+            except Exception as e:
+                print(f"Error saving jobs: {e}")
 
     def create_job(self, platform: str) -> str:
         job_id = str(uuid.uuid4())
@@ -117,13 +153,15 @@ class JobManager:
             "error": None
         }
         self.cancel_events[job_id] = threading.Event()
-        self.save_jobs()
+        self.save_jobs(force=True)
         return job_id
 
     def update_job(self, job_id: str, updates: Dict[str, Any]):
         if job_id in self.jobs:
             self.jobs[job_id].update(updates)
-            self.save_jobs()
+            # Force immediate save when important fields change; debounce progress-only updates
+            force = bool(self._IMMEDIATE_SAVE_KEYS & updates.keys())
+            self.save_jobs(force=force)
             
     def get_job(self, job_id: str) -> Optional[Dict[str, Any]]:
         return self.jobs.get(job_id)
@@ -184,10 +222,11 @@ class JobStartRequest(BaseModel):
     source_file_id: str
     target_file_ids: list[str]
     preview_frequency: int = 15
+    preview_enabled: bool = True
+    preview_resolution: int = 320
     processors: list[str] = ["swap", "restore"]
     swap_model: str = "inswapper_128"
     swap_weight: float = 0.65
-    swap_boost: int = 128
     restore_model: str = "gfpgan_1.4"
     restore_weight: float = 1.0
     restore_blend: int = 100
@@ -195,6 +234,7 @@ class JobStartRequest(BaseModel):
     mask_regions: list[str] = ['skin', 'l_brow', 'r_brow', 'l_eye', 'r_eye', 'nose', 'mouth', 'u_lip', 'l_lip']
     similarity: bool = False
     providers: list[str] = ["cpu"]
+    execution_thread_count: int = 4
     skip_existing: bool = True
 
 def run_job_background(job_id: str, req: JobStartRequest, x_client_platform: str):
@@ -202,11 +242,13 @@ def run_job_background(job_id: str, req: JobStartRequest, x_client_platform: str
     source_path = os.path.join(uploads_dir, req.source_file_id)
     cancel_event = job_manager.cancel_events[job_id]
     
+    # TODO(#1): `state` is a global singleton — safe now because there is exactly 1 worker thread.
+    # If the worker pool is ever expanded to support concurrent jobs, each job must receive
+    # its own isolated config snapshot instead of writing to this shared object.
     state.init(parse_args=False)
     state.processors = req.processors
     state.swap_model = req.swap_model
     state.swap_weight = req.swap_weight
-    state.swap_boost = req.swap_boost
     state.restore_model = req.restore_model
     state.restore_weight = req.restore_weight
     state.restore_blend = req.restore_blend
@@ -215,16 +257,17 @@ def run_job_background(job_id: str, req: JobStartRequest, x_client_platform: str
     state.similarity = req.similarity
     if hasattr(state, "_parse_providers"):
         state._parse_providers(" ".join(req.providers))
+    state.execution_thread_count = req.execution_thread_count
     state.source_path = source_path
     
-    
+    job_completed_successfully = False
     try:
         if req.source_type == "model":
             # Load the face model
-            from core.face_model import load_face_model
+            from uniface.core.face_model import load_face_model
             source_face = load_face_model(req.source_file_id, get_platform_dir(x_client_platform))
         else:
-            from modules.detector import detect
+            from uniface.modules.detector import detect
             source_img = cv2.imread(source_path)
             if source_img is None:
                 raise Exception("Could not read source image")
@@ -240,22 +283,22 @@ def run_job_background(job_id: str, req: JobStartRequest, x_client_platform: str
         print(f"Starting job {job_id} with {total_targets} target files: {req.target_file_ids}")
         last_output_path = None
         
-        for idx, target_id in enumerate(req.target_file_ids):
-            print(f"Processing target {idx + 1}/{total_targets}: {target_id}")
-            if cancel_event.is_set():
-                break
-                
+        image_in_paths = []
+        image_out_paths = []
+        video_tasks = []
+        
+        import mimetypes
+        
+        for target_id in req.target_file_ids:
             target_path = os.path.join(uploads_dir, target_id)
             target_basename = os.path.basename(target_id)
             source_basename = os.path.basename(req.source_file_id)
-            import mimetypes
             mime_type, _ = mimetypes.guess_type(target_path)
             is_image = mime_type and mime_type.startswith('image')
             
             target_name, _ = os.path.splitext(target_basename)
             source_name, _ = os.path.splitext(source_basename)
             
-            # Shorten the names a bit to avoid extremely long paths
             out_name = f"out_{source_name[:8]}_{target_name[:8]}"
             if not req.skip_existing:
                 out_name += f"_{uuid.uuid4().hex[:6]}"
@@ -263,19 +306,27 @@ def run_job_background(job_id: str, req: JobStartRequest, x_client_platform: str
             if is_image:
                 ext = os.path.splitext(target_path)[1] or '.jpg'
                 out_name += ext
+                out_path = os.path.join(outputs_dir, out_name)
+                image_in_paths.append(target_path)
+                image_out_paths.append(out_path)
             else:
                 if not out_name.endswith('.mp4'):
                     out_name += ".mp4"
-                    
-            output_path = os.path.join(outputs_dir, out_name)
-            last_output_path = output_path
+                out_path = os.path.join(outputs_dir, out_name)
+                video_tasks.append((target_path, out_path))
+                
+            last_output_path = out_path
             
-            job_manager.update_job(job_id, {"status": "processing", "output_path": output_path})
-            
-            # Callback for progress and preview
-            def progress_callback(current: int, total: int, frame: np.ndarray = None):
-                file_pct = (current / total) * 100 if total > 0 else 0
-                overall_pct = (idx / total_targets * 100) + (file_pct / total_targets)
+        job_manager.update_job(job_id, {"status": "processing"})
+        
+        processed_total = 0
+        
+        # 1. Process all images as a single batch using SwarmEngine
+        if image_in_paths:
+            from uniface.core.image_service import process_images_swarm
+            def img_progress(current: int, total: int, frame: np.ndarray = None):
+                nonlocal processed_total
+                overall_pct = ((processed_total + current) / total_targets) * 100
                 
                 updates = {
                     "progress": round(overall_pct, 2),
@@ -283,46 +334,91 @@ def run_job_background(job_id: str, req: JobStartRequest, x_client_platform: str
                     "total_frames": total
                 }
                 
+                # Dynamic preview settings
+                current_job = job_manager.get_job(job_id)
+                preview_enabled = current_job.get("preview_enabled", req.preview_enabled)
+                preview_res = current_job.get("preview_resolution", req.preview_resolution)
+                
                 freq = max(1, req.preview_frequency)
-                if frame is not None and (current == 1 or current % freq == 0 or current == total):
+                if preview_enabled and frame is not None and (current == 1 or current % freq == 0 or current == total):
                     h, w = frame.shape[:2]
-                    scale = 320 / max(h, w)
-                    preview_frame = cv2.resize(frame, (int(w*scale), int(h*scale)))
+                    scale = preview_res / max(h, w)
+                    if scale < 1.0:
+                        preview_frame = cv2.resize(frame, (int(w*scale), int(h*scale)))
+                    else:
+                        preview_frame = frame
                     _, buffer = cv2.imencode('.jpg', preview_frame, [cv2.IMWRITE_JPEG_QUALITY, 50])
                     b64 = base64.b64encode(buffer).decode('utf-8')
                     updates["preview_image"] = f"data:image/jpeg;base64,{b64}"
-                    
                 job_manager.update_job(job_id, updates)
                 
-            if is_image:
-                target_img = cv2.imread(target_path)
-                if target_img is not None:
-                    processed_img = process_image(source_face, target_img, verbose=False)
-                    cv2.imwrite(output_path, processed_img)
-                    progress_callback(1, 1, processed_img)
-            else:
-                process_video(source_face, target_path, output_path, progress_callback=progress_callback, cancel_event=cancel_event, skip_existing=req.skip_existing)
+            process_images_swarm(source_face, image_in_paths, image_out_paths, progress_callback=img_progress, cancel_event=cancel_event)
+            processed_total += len(image_in_paths)
+
+        # 2. Process videos sequentially
+        for v_in, v_out in video_tasks:
+            if cancel_event.is_set():
+                break
+                
+            job_manager.update_job(job_id, {"output_path": v_out})
+            
+            def vid_progress(current: int, total: int, frame: np.ndarray = None):
+                file_pct = (current / total) if total > 0 else 0
+                overall_pct = ((processed_total + file_pct) / total_targets) * 100
+                
+                updates = {
+                    "progress": round(overall_pct, 2),
+                    "frames_done": current,
+                    "total_frames": total
+                }
+                
+                # Dynamic preview settings
+                current_job = job_manager.get_job(job_id)
+                preview_enabled = current_job.get("preview_enabled", req.preview_enabled)
+                preview_res = current_job.get("preview_resolution", req.preview_resolution)
+                
+                freq = max(1, req.preview_frequency)
+                if preview_enabled and frame is not None and (current == 1 or current % freq == 0 or current == total):
+                    h, w = frame.shape[:2]
+                    scale = preview_res / max(h, w)
+                    if scale < 1.0:
+                        preview_frame = cv2.resize(frame, (int(w*scale), int(h*scale)))
+                    else:
+                        preview_frame = frame
+                    _, buffer = cv2.imencode('.jpg', preview_frame, [cv2.IMWRITE_JPEG_QUALITY, 50])
+                    b64 = base64.b64encode(buffer).decode('utf-8')
+                    updates["preview_image"] = f"data:image/jpeg;base64,{b64}"
+                job_manager.update_job(job_id, updates)
+                
+            process_video(source_face, v_in, v_out, progress_callback=vid_progress, cancel_event=cancel_event, skip_existing=req.skip_existing)
+            processed_total += 1
                 
         if not cancel_event.is_set():
             job_manager.update_job(job_id, {"status": "completed", "progress": 100.0, "output_path": last_output_path})
+            job_completed_successfully = True
             
-        # Cleanup targets
+    except Exception as e:
+        job_manager.update_job(job_id, {"status": "failed", "error": str(e)})
+        
+    finally:
+        # Always clean up uploaded target files — they are no longer needed regardless of outcome.
+        # This prevents accumulation of unprocessed files in the workspace after job failures.
         for target_id in set(req.target_file_ids):
             target_path = os.path.join(uploads_dir, target_id)
             try:
                 os.remove(target_path)
-            except:
+            except Exception:
                 pass
         
-        # Cleanup source if it's an uploaded image
-        if req.source_type == "image":
+        # Only clean up uploaded source image on success.
+        # On failure the user may want to retry without re-uploading the same source.
+        if req.source_type == "image" and job_completed_successfully:
             try:
                 os.remove(source_path)
-            except:
+            except Exception:
                 pass
-            
-    except Exception as e:
-        job_manager.update_job(job_id, {"status": "failed", "error": str(e)})
+
+
 
 # --- FACE MODELS API ---
 @app.get("/api/v1/face-models")
@@ -345,8 +441,8 @@ async def build_face_model(
     x_client_platform: str = Header("unknown")
 ):
     platform_dir = get_platform_dir(x_client_platform)
-    from core.face_model import save_face_model
-    from modules.detector import detect
+    from uniface.core.face_model import save_face_model
+    from uniface.modules.detector import detect
     
     faces = []
     for file in files:
@@ -377,11 +473,27 @@ async def create_job(
     x_client_platform: str = Header("unknown")
 ):
     job_id = job_manager.create_job(x_client_platform)
+    job_manager.update_job(job_id, {
+        "preview_enabled": req.preview_enabled,
+        "preview_resolution": req.preview_resolution
+    })
     
     # Enqueue job instead of starting a new thread immediately
     job_manager.job_queue.put((job_id, req, x_client_platform))
     
     return {"job_id": job_id, "status": "pending"}
+
+class PreviewSettings(BaseModel):
+    enabled: bool
+    resolution: int
+
+@app.post("/api/v1/jobs/{job_id}/preview")
+async def update_preview_settings(job_id: str, settings: PreviewSettings):
+    job_manager.update_job(job_id, {
+        "preview_enabled": settings.enabled,
+        "preview_resolution": settings.resolution
+    })
+    return {"status": "success"}
 
 # Background Worker Thread
 def worker_loop():
@@ -563,6 +675,9 @@ async def download_history_bulk(req: DownloadHistoryRequest, x_client_platform: 
 async def websocket_job_status(websocket: WebSocket, job_id: str):
     await websocket.accept()
     job_manager.active_websockets[job_id] = websocket
+    # Track the MD5 of the last preview we sent so we can skip unchanged frames.
+    # This avoids re-transmitting the same base64 JPEG on every 0.5-second tick.
+    last_preview_hash: str = ""
     
     try:
         while True:
@@ -570,8 +685,25 @@ async def websocket_job_status(websocket: WebSocket, job_id: str):
             if not job:
                 await websocket.send_json({"error": "Job not found"})
                 break
+            
+            # Build the payload, conditionally including preview_image
+            resp = {k: v for k, v in job.items() if k != "preview_image"}
+            preview = job.get("preview_image")
+            if preview:
+                # BUG FIX: preview[:128] was always the same for every frame because all
+                # JPEG files start with an identical SOI+APP0 header (~200 bytes of binary
+                # = ~270 base64 chars), making the dedup hash useless.
+                # Instead, sample from the middle of the image data + the tail.
+                mid = len(preview) // 2
+                preview_hash = hashlib.md5(
+                    (preview[mid : mid + 256] + preview[-128:]).encode()
+                ).hexdigest()
+                if preview_hash != last_preview_hash:
+                    resp["preview_image"] = preview
+                    last_preview_hash = preview_hash
+                # else: preview unchanged — omit it from this tick to save bandwidth
                 
-            await websocket.send_json(job)
+            await websocket.send_json(resp)
             
             if job["status"] in ["completed", "failed"]:
                 break
@@ -580,6 +712,8 @@ async def websocket_job_status(websocket: WebSocket, job_id: str):
     except WebSocketDisconnect:
         # User disconnected, but we let the job continue in the background
         print(f"Client disconnected. Job {job_id} will continue in background.")
+    except Exception as e:
+        print(f"WebSocket error for job {job_id}: {e}")
     finally:
         if job_id in job_manager.active_websockets:
             del job_manager.active_websockets[job_id]

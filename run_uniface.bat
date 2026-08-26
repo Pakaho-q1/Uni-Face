@@ -6,8 +6,9 @@ echo ===================================================
 echo.
 echo Launching Server...
 echo.
-cd /d "D:\WindowsMega\uni-face"
-call conda activate uniface
-python api_server.py
+
+cd /d "%~dp0"
+call conda activate uniface 2>nul || echo [Warning] Conda env 'uniface' not found. Using default python.
+python uni-face.py serve
 
 pause

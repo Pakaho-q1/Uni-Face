@@ -2,8 +2,8 @@ import unittest
 import numpy as np
 from unittest.mock import patch, MagicMock
 
-from core.types import Face
-from modules.compositor import compositor_app, composite
+from uniface.core.types import Face
+from uniface.modules.compositor import compositor_app, composite
 
 class TestCompositor(unittest.TestCase):
     def setUp(self):

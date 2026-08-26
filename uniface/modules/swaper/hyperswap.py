@@ -1,25 +1,23 @@
-import cv2
 import numpy as np
-import onnx
 import onnxruntime
 from typing import Literal
 
-from core.types import Face
-from core.config import MODEL_PATHS
-from core.state import state
-from modules.utils import face_math
-from modules.swaper.base import BaseSwaper
+from uniface.core.types import Face
+from uniface.core.config import MODEL_PATHS
+from uniface.core.state import state
+from uniface.modules.utils import face_math
+from uniface.modules.swaper.base import BaseSwaper
 
-class Inswapper(BaseSwaper):
+class Hyperswap(BaseSwaper):
     """
-    Native implementation of Inswapper 128.
+    Native implementation of Hyperswap 256.
     """
 
     def __init__(self):
         self.providers = state.providers
         model_key = state.swap_model
         if model_key not in MODEL_PATHS:
-            model_key = "inswapper_128"
+            model_key = "hyperswap_1a_256"
             
         model_path = str(MODEL_PATHS[model_key])
         provider_names = [p if isinstance(p, str) else p[0] for p in self.providers]
@@ -28,14 +26,10 @@ class Inswapper(BaseSwaper):
         # 1. Initialize ONNX Session
         self.session = onnxruntime.InferenceSession(model_path, providers=self.providers, sess_options=state.session_options)
         
-        # 2. Extract model initializer for embedding dot product
-        model = onnx.load(model_path)
-        self.model_initializer = onnx.numpy_helper.to_array(model.graph.initializer[-1])
-        
         self.template = 'arcface_128'
-        self.crop_size = (128, 128)
-        self.mean = [0.0, 0.0, 0.0]
-        self.std = [1.0, 1.0, 1.0]
+        self.crop_size = (256, 256)
+        self.mean = [0.5, 0.5, 0.5]
+        self.std = [0.5, 0.5, 0.5]
         
     def swap(self, source_face: Face, target_face: Face, temp_vision_frame: np.ndarray) -> np.ndarray:
         # 1. Warp target face
@@ -60,13 +54,11 @@ class Inswapper(BaseSwaper):
         source_embedding = source_face.embedding.copy().reshape(1, -1)
         target_embedding = target_face.embedding.copy().reshape(1, -1)
         
-        target_embedding = target_embedding / np.linalg.norm(target_embedding)
-            
         # Apply balance
         balanced_embedding = source_embedding * (1 - weight) + target_embedding * weight
         
-        # Inswapper requires a specific dot product normalization with its initializer
-        source_embedding_proj = np.dot(balanced_embedding, self.model_initializer) / np.linalg.norm(balanced_embedding)
+        # Hyperswap takes the normalized embedding directly
+        source_embedding_proj = balanced_embedding / np.linalg.norm(balanced_embedding)
             
         # 4. Run Inference
         inputs = {
@@ -81,9 +73,8 @@ class Inswapper(BaseSwaper):
         swapped_crop = swapped_crop.clip(0, 1)
         swapped_crop = swapped_crop[:, :, ::-1] * 255.0 # RGB to BGR
         
-        # 6. Generate precise mask using Parser on the original target crop (not swapped_crop)
-        # This ensures we preserve the target's exact facial features, hands, or occlusions.
-        from modules.parser import get_combined_mask
+        # 6. Generate precise mask using Parser
+        from uniface.modules.parser import get_combined_mask
         crop_mask = get_combined_mask(temp_vision_frame, original_crop_vision_frame, state.mask_types, target_face, affine_matrix)
         
         # 7. Paste back

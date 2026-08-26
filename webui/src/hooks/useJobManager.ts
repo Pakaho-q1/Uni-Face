@@ -1,59 +1,85 @@
-import { useState, useCallback, useRef } from 'react';
+import { useState, useRef, useCallback } from 'react';
+import axios from 'axios';
+import { toast } from 'sonner';
 
-export type JobState = {
-  running: boolean;
-  uploading: boolean;
-  progress: number;
-  targetPreview: string;
-  targetType: 'video' | 'image';
+export interface JobState {
   currentJobId: string | null;
+  running: boolean;
+  progress: number;
+  uploading: boolean;
+  uploadProgress: number;
+  framesDone: number;
+  totalFrames: number;
+  targetPreview: string;
+  targetType?: 'video' | 'image';
 }
 
-export function useJobManager(apiBase: string, platform: string, onJobComplete: () => void) {
+export function useJobManager(apiBase: string, platform: string, onJobComplete?: () => void) {
   const [state, setState] = useState<JobState>({
+    currentJobId: null,
     running: false,
-    uploading: false,
     progress: 0,
+    uploading: false,
+    uploadProgress: 0,
+    framesDone: 0,
+    totalFrames: 0,
     targetPreview: '',
-    targetType: 'video',
-    currentJobId: null
+    targetType: 'image',
   });
-
   const wsRef = useRef<WebSocket | null>(null);
 
   const connectWebSocket = useCallback((jobId: string) => {
-    const wsUrl = `ws://${window.location.hostname}:8000/api/v1/ws/jobs/${jobId}`;
-    const websocket = new WebSocket(wsUrl);
+    if (wsRef.current) wsRef.current.close();
     
-    websocket.onmessage = (event) => {
-      const data = JSON.parse(event.data);
-      
-      setState(prev => ({
-        ...prev,
-        progress: data.progress || 0,
-        ...(data.preview_image ? { 
-          targetType: 'image', 
-          targetPreview: data.preview_image 
-        } : {})
-      }));
-      
-      if (data.status === 'completed') {
-        let finalPreview = '';
-        if (data.output_path) {
-          const filename = data.output_path.split(/[\\/]/).pop();
-          finalPreview = `${apiBase}/api/v1/history/${filename}?platform=${platform}`;
+    const wsProtocol = apiBase.startsWith('https') ? 'wss' : 'ws';
+    const wsBase = apiBase.replace(/^https?/, wsProtocol);
+    const wsUrl = `${wsBase}/api/v1/ws/jobs/${jobId}`;
+    
+    const ws = new WebSocket(wsUrl);
+    wsRef.current = ws;
+
+    ws.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data);
+        if (data.error) {
+          toast.error("Job Error", { description: data.error });
+          setState(prev => ({ ...prev, running: false }));
+          return;
         }
-        setState(prev => ({ ...prev, running: false, targetPreview: finalPreview || prev.targetPreview }));
-        onJobComplete();
-        websocket.close();
-      } else if (data.status === 'failed') {
-        setState(prev => ({ ...prev, running: false }));
-        console.error("Processing Failed: " + data.error);
-        websocket.close();
+
+        setState(prev => ({
+          ...prev,
+          progress: data.progress || 0,
+          framesDone: data.frames_done || 0,
+          totalFrames: data.total_frames || 0,
+          ...(data.preview_image ? { 
+            targetPreview: data.preview_image,
+            targetType: 'image'
+          } : {})
+        }));
+
+        if (data.status === "completed" || data.status === "failed") {
+          let finalPreview = '';
+          if (data.status === "completed" && data.output_path) {
+            const filename = data.output_path.split(/[/\\]/).pop();
+            finalPreview = `${apiBase}/api/v1/history/${filename}?platform=${platform}`;
+            toast.success("Job Completed Successfully");
+          } else if (data.status === "failed") {
+            toast.error("Job Failed", { description: data.error || "Unknown error" });
+          }
+          
+          setState(prev => ({ ...prev, running: false, targetPreview: finalPreview || prev.targetPreview }));
+          if (onJobComplete) onJobComplete();
+          ws.close();
+        }
+      } catch (e) {
+        console.error("WS parse error", e);
       }
     };
     
-    wsRef.current = websocket;
+    ws.onerror = (e) => {
+      console.error("WebSocket error", e);
+    };
   }, [apiBase, platform, onJobComplete]);
 
   const checkActiveJob = useCallback(async () => {
@@ -69,17 +95,26 @@ export function useJobManager(apiBase: string, platform: string, onJobComplete: 
     }
   }, [apiBase, platform, connectWebSocket]);
 
-  const uploadFile = async (file: File, type: "source" | "target") => {
+  const uploadFile = async (file: File, type: "source" | "target", onProgress?: (pct: number) => void) => {
     const formData = new FormData();
     formData.append('files', file);
     formData.append('type', type);
-    const res = await fetch(`${apiBase}/api/v1/upload`, {
-      method: 'POST',
-      headers: { 'X-Client-Platform': platform },
-      body: formData
-    });
-    const data = await res.json();
-    return data.uploaded[0].file_id;
+    
+    try {
+      const response = await axios.post(`${apiBase}/api/v1/upload`, formData, {
+        headers: { 'X-Client-Platform': platform },
+        onUploadProgress: (progressEvent) => {
+          if (progressEvent.total) {
+            const pct = Math.round((progressEvent.loaded * 100) / progressEvent.total);
+            if (onProgress) onProgress(pct);
+          }
+        }
+      });
+      return response.data.uploaded[0].file_id;
+    } catch (err: any) {
+      toast.error(`Failed to upload ${file.name}`, { description: err.message });
+      throw err;
+    }
   };
 
   const cancelJob = async () => {
@@ -87,6 +122,7 @@ export function useJobManager(apiBase: string, platform: string, onJobComplete: 
       setState(prev => ({ ...prev, running: false, progress: 0, uploading: false }));
       if (wsRef.current) wsRef.current.close();
       await fetch(`${apiBase}/api/v1/jobs/${state.currentJobId}/cancel`, { method: 'POST' });
+      toast.info("Job cancelled");
     } else if (state.running) {
       setState(prev => ({ ...prev, running: false, progress: 0, uploading: false }));
     }
@@ -98,15 +134,33 @@ export function useJobManager(apiBase: string, platform: string, onJobComplete: 
     targetFiles: File[],
     settings: any
   ) => {
-    setState(prev => ({ ...prev, running: true, uploading: true, progress: 0 }));
+    setState(prev => ({ ...prev, running: true, uploading: true, uploadProgress: 0, progress: 0 }));
     try {
       let sourceId = typeof sourceFileOrModelId === 'string' ? sourceFileOrModelId : '';
+      
+      let totalFiles = targetFiles.length + (sourceType === "image" && sourceFileOrModelId instanceof File ? 1 : 0);
+      let filesCompleted = 0;
+      let currentFileProgress = 0;
+      
+      const updateOverallProgress = (pct: number) => {
+        currentFileProgress = pct;
+        const overall = Math.round(((filesCompleted * 100) + currentFileProgress) / totalFiles);
+        setState(prev => ({ ...prev, uploadProgress: overall }));
+      };
+
       if (sourceType === "image" && sourceFileOrModelId instanceof File) {
-        sourceId = await uploadFile(sourceFileOrModelId, "source");
+        sourceId = await uploadFile(sourceFileOrModelId, "source", updateOverallProgress);
+        filesCompleted++;
+        updateOverallProgress(0);
       }
       
-      const targetUploadPromises = targetFiles.map(f => uploadFile(f, "target"));
-      const targetIds = await Promise.all(targetUploadPromises);
+      const targetIds = [];
+      for (const targetFile of targetFiles) {
+        const tId = await uploadFile(targetFile, "target", updateOverallProgress);
+        targetIds.push(tId);
+        filesCompleted++;
+        updateOverallProgress(0);
+      }
 
       const jobRes = await fetch(`${apiBase}/api/v1/jobs`, {
         method: 'POST',
@@ -120,10 +174,24 @@ export function useJobManager(apiBase: string, platform: string, onJobComplete: 
       });
       const jobData = await jobRes.json();
       setState(prev => ({ ...prev, currentJobId: jobData.job_id, uploading: false }));
+      toast.success("Job started");
       connectWebSocket(jobData.job_id);
+    } catch (err: any) {
+      toast.error("Error starting job", { description: String(err) });
+      setState(prev => ({ ...prev, running: false, uploading: false, uploadProgress: 0 }));
+    }
+  };
+
+  const updatePreviewSettings = async (enabled: boolean, resolution: number) => {
+    if (!state.currentJobId) return;
+    try {
+      await fetch(`${apiBase}/api/v1/jobs/${state.currentJobId}/preview`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled, resolution })
+      });
     } catch (err) {
-      alert("Error starting job: " + err);
-      setState(prev => ({ ...prev, running: false, uploading: false }));
+      console.error("Failed to update preview settings:", err);
     }
   };
 
@@ -132,6 +200,7 @@ export function useJobManager(apiBase: string, platform: string, onJobComplete: 
     setJobState: setState,
     checkActiveJob,
     startJob,
-    cancelJob
+    cancelJob,
+    updatePreviewSettings
   };
 }

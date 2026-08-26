@@ -13,9 +13,9 @@ interface SettingsPanelProps {
 
 export function useSettings() {
   const [executionProvider, setExecutionProvider] = useStickyState('cpu', 'setting_executionProvider');
+  const [executionThreadCount, setExecutionThreadCount] = useStickyState([4], 'setting_executionThreadCount');
   const [swapModel, setSwapModel] = useStickyState('inswapper_128', 'setting_swapModel');
   const [swapWeight, setSwapWeight] = useStickyState([65], 'setting_swapWeight');
-  const [swapBoost, setSwapBoost] = useStickyState([128], 'setting_swapBoost');
   const [restoreModel, setRestoreModel] = useStickyState('gfpgan_1.4', 'setting_restoreModel');
   const [restoreWeight, setRestoreWeight] = useStickyState([100], 'setting_restoreWeight');
   const [restoreBlend, setRestoreBlend] = useStickyState([100], 'setting_restoreBlend');
@@ -23,15 +23,16 @@ export function useSettings() {
   const [colorMatch, setColorMatch] = useStickyState(false, 'setting_colorMatch');
   const [similarity, setSimilarity] = useStickyState(false, 'setting_similarity');
   const [previewFreq, setPreviewFreq] = useStickyState([15], 'setting_previewFreq');
+  const [previewRes, setPreviewRes] = useStickyState('320', 'setting_previewRes');
   const [maskTypes, setMaskTypes] = useStickyState<string[]>(['box'], 'setting_maskTypes');
   const [maskRegions, setMaskRegions] = useStickyState<string[]>(['skin', 'l_brow', 'r_brow', 'l_eye', 'r_eye', 'nose', 'mouth', 'u_lip', 'l_lip'], 'setting_maskRegions');
   const [skipExisting, setSkipExisting] = useStickyState(true, 'setting_skipExisting');
 
   return {
     executionProvider, setExecutionProvider,
+    executionThreadCount, setExecutionThreadCount,
     swapModel, setSwapModel,
     swapWeight, setSwapWeight,
-    swapBoost, setSwapBoost,
     restoreModel, setRestoreModel,
     restoreWeight, setRestoreWeight,
     restoreBlend, setRestoreBlend,
@@ -39,6 +40,7 @@ export function useSettings() {
     colorMatch, setColorMatch,
     similarity, setSimilarity,
     previewFreq, setPreviewFreq,
+    previewRes, setPreviewRes,
     maskTypes, setMaskTypes,
     maskRegions, setMaskRegions,
     skipExisting, setSkipExisting
@@ -47,11 +49,12 @@ export function useSettings() {
 
 export function SettingsPanel({ open, onClose, settings }: SettingsPanelProps) {
   return (
-    <aside className={`shrink-0 h-full bg-card border-l border-border transition-all duration-300 flex flex-col ${open ? 'w-[300px]' : 'w-0 overflow-hidden border-none'}`}>
-      <div className="h-14 shrink-0 flex items-center justify-between px-4 border-b border-border font-mono text-[11px] tracking-widest text-muted-foreground whitespace-nowrap">
-        SETTINGS
-        <button className="p-1 hover:text-foreground transition-colors" onClick={onClose}><X size={16}/></button>
-      </div>
+    <aside className={`absolute md:relative right-0 top-0 bottom-0 z-[60] md:z-10 shrink-0 h-full bg-card transition-all duration-300 overflow-hidden ${open ? 'w-[85vw] max-w-[300px] md:w-[300px] border-l border-border shadow-2xl md:shadow-none' : 'w-0 border-none'}`}>
+      <div className="w-[85vw] max-w-[300px] md:w-[300px] h-full flex flex-col relative">
+        <div className="h-14 shrink-0 flex items-center justify-between px-4 border-b border-border font-mono text-[11px] tracking-widest text-muted-foreground whitespace-nowrap">
+          SETTINGS
+          <button className="p-1 hover:text-foreground transition-colors" onClick={onClose}><X size={16}/></button>
+        </div>
       
       <div className="flex-1 overflow-y-auto p-4 space-y-6">
         
@@ -69,6 +72,13 @@ export function SettingsPanel({ open, onClose, settings }: SettingsPanelProps) {
                 <SelectItem value="trt">TensorRT (Fastest)</SelectItem>
               </SelectContent>
             </Select>
+          </div>
+
+          <div className="space-y-2">
+            <label className="flex justify-between text-xs text-muted-foreground">
+              Thread Count <span className="font-mono text-primary">{settings.executionThreadCount[0]}</span>
+            </label>
+            <Slider value={settings.executionThreadCount} onValueChange={settings.setExecutionThreadCount} max={32} min={1} step={1} />
           </div>
 
           <div className="space-y-2">
@@ -91,13 +101,6 @@ export function SettingsPanel({ open, onClose, settings }: SettingsPanelProps) {
               Swap Weight <span className="font-mono text-primary">{settings.swapWeight[0]}%</span>
             </label>
             <Slider value={settings.swapWeight} onValueChange={settings.setSwapWeight} max={100} step={1} />
-          </div>
-          
-          <div className="space-y-2">
-            <label className="flex justify-between text-xs text-muted-foreground">
-              Swap Boost <span className="font-mono text-primary">{settings.swapBoost[0]}</span>
-            </label>
-            <Slider value={settings.swapBoost} onValueChange={settings.setSwapBoost} max={256} step={1} />
           </div>
         </div>
 
@@ -236,6 +239,20 @@ export function SettingsPanel({ open, onClose, settings }: SettingsPanelProps) {
           </label>
           <Slider value={settings.previewFreq} onValueChange={settings.setPreviewFreq} max={60} min={1} step={1} />
         </div>
+        
+        <div className="space-y-2">
+          <label className="text-xs text-muted-foreground">Preview Resolution</label>
+          <Select value={settings.previewRes} onValueChange={settings.setPreviewRes}>
+            <SelectTrigger className="w-full text-xs h-8">
+              <SelectValue placeholder="Select resolution" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="320">320p (Fastest)</SelectItem>
+              <SelectItem value="480">480p</SelectItem>
+              <SelectItem value="720">720p (High Quality)</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
 
         <p className="text-[11px] text-muted-foreground pt-4 leading-relaxed">
           All settings are saved automatically to your browser.
@@ -243,6 +260,7 @@ export function SettingsPanel({ open, onClose, settings }: SettingsPanelProps) {
 
         {/* Spacer for bottom bar */}
         <div className="h-20" />
+      </div>
       </div>
     </aside>
   );

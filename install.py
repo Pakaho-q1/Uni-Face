@@ -1,31 +1,30 @@
 import os
 import sys
 import subprocess
+from pathlib import Path
+
+ROOT_DIR = Path(__file__).resolve().parent
 
 def run_command(command, cwd=None):
-    print(f"> {' '.join(command)}")
+    cmd_str = ' '.join(command) if isinstance(command, list) else command
+    print(f"> {cmd_str}")
     try:
-        subprocess.check_call(command, cwd=cwd)
+        subprocess.check_call(command, cwd=cwd, shell=isinstance(command, str))
     except subprocess.CalledProcessError as e:
         print(f"Error executing command: {e}")
         sys.exit(1)
 
 def install_python_deps():
     print("--- Installing Python Dependencies ---")
-    
-    # Base requirements
-    reqs = ["-r", "requirements.txt"]
-    
-    # Basic install
     run_command([sys.executable, "-m", "pip", "install", "--upgrade", "pip"])
     
-    # If cuda or tensorrt is requested, we should make sure onnxruntime-gpu is installed
-    # (By default requirements.txt just has onnxruntime, but pip will resolve it if we override)
-    if "cuda" in " ".join(sys.argv).lower() or "tensorrt" in " ".join(sys.argv).lower():
-        print("Hardware acceleration detected (CUDA/TensorRT). Ensuring GPU packages are installed...")
+    # Check hardware args
+    args_str = " ".join(sys.argv).lower()
+    if "cuda" in args_str or "tensorrt" in args_str:
+        print("Hardware acceleration requested. Installing onnxruntime-gpu...")
         run_command([sys.executable, "-m", "pip", "install", "onnxruntime-gpu"])
     
-    run_command([sys.executable, "-m", "pip", "install"] + reqs)
+    run_command([sys.executable, "-m", "pip", "install", "-r", "requirements.txt"], cwd=str(ROOT_DIR))
 
 def main():
     print("===========================================")
@@ -34,8 +33,8 @@ def main():
     install_python_deps()
     print("===========================================")
     print(" Installation Complete! 🎉")
-    print(" You can now run the server with:")
-    print(" python api_server.py")
+    print(" You can now run the web interface with:")
+    print(" run_uniface.bat")
     print("===========================================")
 
 if __name__ == "__main__":

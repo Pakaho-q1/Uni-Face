@@ -1,7 +1,8 @@
 import configparser
 import argparse
 import os
-from core.config import ROOT_DIR
+from typing import List
+from uniface.core.config import ROOT_DIR
 
 class StateManager:
     def __init__(self):
@@ -20,7 +21,6 @@ class StateManager:
         
         self.swap_model = "inswapper_128"
         self.swap_weight = 0.65
-        self.swap_boost = 128
         self.mask_types = ["box"]
         
         self.restore_model = "gfpgan_1.4"
@@ -51,7 +51,6 @@ class StateManager:
                 if "processors" in p: self.processors = p["processors"].split()
                 if "swap_model" in p: self.swap_model = p["swap_model"]
                 if "swap_weight" in p: self.swap_weight = float(p["swap_weight"])
-                if "swap_boost" in p: self.swap_boost = int(p["swap_boost"])
                 if "mask_types" in p: self.mask_types = p["mask_types"].split()
                 if "restore_model" in p: self.restore_model = p["restore_model"]
                 if "restore_weight" in p: self.restore_weight = float(p["restore_weight"])
@@ -72,8 +71,7 @@ class StateManager:
         parser.add_argument("--processors", nargs="+")
         parser.add_argument("--swap_model", type=str)
         parser.add_argument("--swap_weight", type=float)
-        parser.add_argument("--swap_boost", type=int)
-        parser.add_argument("--mask_types", nargs="+")
+        parser.add_argument("--mask_types", nargs="+", type=str)
         parser.add_argument("--restore_model", type=str)
         parser.add_argument("--restore_weight", type=float)
         parser.add_argument("--restore_blend", type=int)
@@ -89,10 +87,9 @@ class StateManager:
         if args.execution_thread_count is not None: self.execution_thread_count = args.execution_thread_count
         if args.video_encoder: self.video_encoder = args.video_encoder
         if args.processors: self.processors = args.processors
-        if args.swap_model: self.swap_model = args.swap_model
+        if args.swap_model is not None: self.swap_model = args.swap_model
         if args.swap_weight is not None: self.swap_weight = args.swap_weight
-        if args.swap_boost is not None: self.swap_boost = args.swap_boost
-        if args.mask_types: self.mask_types = args.mask_types
+        if args.mask_types is not None: self.mask_types = args.mask_types
         if args.restore_model: self.restore_model = args.restore_model
         if args.restore_weight is not None: self.restore_weight = args.restore_weight
         if args.restore_blend is not None: self.restore_blend = args.restore_blend

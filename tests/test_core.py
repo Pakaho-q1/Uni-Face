@@ -1,6 +1,6 @@
 import unittest
-from core.state import SwapState
-from core.dispatcher import run_pipeline
+from uniface.core.state import SwapState
+from uniface.core.dispatcher import run_pipeline
 
 class TestCore(unittest.TestCase):
     def test_state_creation(self):

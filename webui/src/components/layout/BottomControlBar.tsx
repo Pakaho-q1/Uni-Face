@@ -3,6 +3,7 @@ import { Square, CirclePlay, Video, VideoOff } from 'lucide-react';
 interface BottomControlBarProps {
   running: boolean;
   uploading: boolean;
+  uploadProgress?: number;
   progress: number;
   previewVisible: boolean;
   onToggleRun: () => void;
@@ -12,6 +13,7 @@ interface BottomControlBarProps {
 export function BottomControlBar({
   running,
   uploading,
+  uploadProgress = 0,
   progress,
   previewVisible,
   visible = true,
@@ -33,11 +35,11 @@ export function BottomControlBar({
         <span>{uploading ? 'UPLOADING...' : (running ? 'CANCEL' : 'START')}</span>
       </button>
 
-      {running && (
+      {(running || uploading) && (
         <div className="absolute -top-3 left-1/2 -translate-x-1/2 w-[95%] h-1 bg-secondary rounded-full overflow-hidden">
           <div 
             className="h-full bg-primary transition-all duration-300 ease-out relative"
-            style={{ width: `${progress}%` }}
+            style={{ width: `${uploading ? uploadProgress : progress}%` }}
           >
             <div className="absolute top-0 right-0 bottom-0 left-0 bg-white/20 animate-pulse" />
           </div>

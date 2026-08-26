@@ -1,4 +1,4 @@
-from core.state import SwapState
+from uniface.core.state import SwapState
 
 def run_pipeline(state: SwapState):
     """

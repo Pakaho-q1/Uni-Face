@@ -2,7 +2,7 @@ import os
 from pathlib import Path
 
 # Base Paths
-ROOT_DIR = Path(__file__).resolve().parent.parent
+ROOT_DIR = Path(__file__).resolve().parent.parent.parent
 MODELS_DIR = ROOT_DIR / "models"
 INSIGHTFACE_MODELS_DIR = MODELS_DIR / "insightface_models" / "models" / "buffalo_l"
 

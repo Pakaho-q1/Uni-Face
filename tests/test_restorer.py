@@ -2,8 +2,8 @@ import unittest
 from unittest.mock import patch, MagicMock
 import numpy as np
 
-from core.types import Face
-from modules.restorer import FaceRestorer
+from uniface.core.types import Face
+from uniface.modules.restorer import FaceRestorer
 
 class TestFaceRestorer(unittest.TestCase):
 

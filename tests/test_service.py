@@ -2,8 +2,8 @@ import unittest
 from unittest.mock import patch, MagicMock
 import numpy as np
 
-from core.types import Face
-from core.service import FaceService
+from uniface.core.types import Face
+from uniface.core.service import FaceService
 
 class TestFaceService(unittest.TestCase):
     

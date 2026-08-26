@@ -66,10 +66,10 @@ export function PreviewStage({
   };
 
   return (
-    <main className="flex-1 flex flex-col min-w-0 min-h-0 p-4 gap-4 overflow-hidden relative">
+    <main className="flex-1 flex flex-col min-w-0 min-h-0 p-0 md:p-4 pb-20 md:pb-4 gap-0 md:gap-4 overflow-y-auto overflow-x-hidden relative scroll-smooth">
       
       {/* The Main Screen */}
-      <div className="flex-1 relative bg-black border border-border rounded-2xl overflow-hidden flex items-center justify-center shadow-2xl">
+      <div className="flex-1 relative bg-black md:border border-border md:rounded-2xl overflow-hidden flex items-center justify-center md:shadow-2xl min-h-[40vh] md:min-h-[30vh]">
         
         {/* HUD Elements */}
         <div className="absolute top-4 left-4 w-4 h-4 border-t-2 border-l-2 border-primary/50 pointer-events-none" />
@@ -110,7 +110,7 @@ export function PreviewStage({
       </div>
 
       {/* Uploaders */}
-      <div className="shrink-0 grid grid-cols-1 md:grid-cols-2 gap-3 mb-16">
+      <div className="shrink-0 grid grid-cols-2 gap-3 pb-4 md:pb-0 px-4 md:px-0 pt-4 md:pt-0">
         
         {/* Source Card */}
         <div 
@@ -152,10 +152,10 @@ export function PreviewStage({
               </div>
             </div>
           ) : (
-            <div className="flex items-center gap-2 mt-1">
+            <div className="flex items-center gap-2 mt-1 min-w-0">
               <Select value={sourceModel} onValueChange={onSourceModelChange}>
-                <SelectTrigger className="h-9 text-xs bg-background border-border flex-1">
-                  <SelectValue placeholder="Select .safetensors model" />
+                <SelectTrigger className="h-9 text-[10px] bg-background border-border flex-1 min-w-0 [&>span]:truncate px-2">
+                  <SelectValue placeholder="Select model" />
                 </SelectTrigger>
                 <SelectContent>
                   {availableModels.length === 0 ? (

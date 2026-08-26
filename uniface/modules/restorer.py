@@ -3,11 +3,11 @@ import numpy as np
 import onnxruntime
 from typing import Literal
 
-from core.types import Face
-from core.config import MODEL_PATHS
-from core.state import state
-from modules.utils import face_math
-from modules.parser import get_combined_mask
+from uniface.core.types import Face
+from uniface.core.config import MODEL_PATHS
+from uniface.core.state import state
+from uniface.modules.utils import face_math
+from uniface.modules.parser import get_combined_mask
 
 class FaceRestorer:
     """

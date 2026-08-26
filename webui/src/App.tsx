@@ -5,6 +5,7 @@ import { SettingsPanel, useSettings } from '@/components/layout/SettingsPanel';
 import { BottomControlBar } from '@/components/layout/BottomControlBar';
 import { PreviewStage } from '@/components/stage/PreviewStage';
 import { ModelBuilderDialog } from '@/components/stage/ModelBuilderDialog';
+import { Toaster } from 'sonner';
 import { useHistory, type HistoryItem } from '@/hooks/useHistory';
 import { useJobManager } from '@/hooks/useJobManager';
 
@@ -53,6 +54,13 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Sync dynamic preview settings with backend
+  useEffect(() => {
+    if (jobManager.jobState.currentJobId && jobManager.jobState.running) {
+      jobManager.updatePreviewSettings(previewVisible, parseInt(settings.previewRes, 10));
+    }
+  }, [previewVisible, settings.previewRes, jobManager.jobState.currentJobId, jobManager.jobState.running]);
+
   const handleSourceChange = (file: File) => {
     setSourceFile(file);
     setSourcePreview(URL.createObjectURL(file));
@@ -85,10 +93,11 @@ export default function App() {
 
       const jobSettings = {
         preview_frequency: settings.previewFreq[0],
+        preview_enabled: previewVisible,
+        preview_resolution: parseInt(settings.previewRes, 10),
         processors: processors,
         swap_model: settings.swapModel,
         swap_weight: settings.swapWeight[0] / 100,
-        swap_boost: settings.swapBoost[0],
         restore_model: settings.restoreModel,
         restore_weight: settings.restoreWeight[0] / 100,
         restore_blend: settings.restoreBlend[0],
@@ -96,6 +105,7 @@ export default function App() {
         mask_regions: settings.maskRegions,
         similarity: settings.similarity,
         providers: [settings.executionProvider],
+        execution_thread_count: settings.executionThreadCount[0],
         skip_existing: settings.skipExisting
       };
 
@@ -104,11 +114,17 @@ export default function App() {
     }
   };
 
-  const toggleLeft = () => { setLeftOpen(!leftOpen); setRightOpen(false); };
-  const toggleRight = () => { setRightOpen(!rightOpen); setLeftOpen(false); };
+  const toggleLeft = () => { 
+    setLeftOpen(!leftOpen); 
+    if (window.innerWidth < 768 && !leftOpen) setRightOpen(false);
+  };
+  const toggleRight = () => { 
+    setRightOpen(!rightOpen); 
+    if (window.innerWidth < 768 && !rightOpen) setLeftOpen(false);
+  };
 
   return (
-    <div className="flex flex-col h-screen w-full overflow-hidden bg-background">
+    <div className="flex flex-col h-[100dvh] w-full overflow-hidden bg-background">
       
       <TopNav 
         leftOpen={leftOpen} 
@@ -160,9 +176,10 @@ export default function App() {
         <BottomControlBar 
           running={jobManager.jobState.running}
           uploading={jobManager.jobState.uploading}
+          uploadProgress={jobManager.jobState.uploadProgress}
           progress={jobManager.jobState.progress}
           previewVisible={previewVisible}
-          visible={!leftOpen}
+          visible={!builderOpen}
           onToggleRun={toggleRun}
           onTogglePreview={() => setPreviewVisible(!previewVisible)}
         />
@@ -175,7 +192,9 @@ export default function App() {
           onModelBuilt={fetchModels}
         />
         
+        
       </div>
+      <Toaster theme="dark" position="bottom-center" />
     </div>
   );
 }

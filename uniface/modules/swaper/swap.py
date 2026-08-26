@@ -1,6 +1,6 @@
 import numpy as np
-from core.types import Face
-from core.state import state
+from uniface.core.types import Face
+from uniface.core.state import state
 
 import threading
 
@@ -15,10 +15,10 @@ def get_swapper():
             if swapper_app is None or current_swap_model != state.swap_model:
                 model_key = state.swap_model
                 if 'hyperswap' in model_key:
-                    from modules.swaper.hyperswap import Hyperswap
+                    from uniface.modules.swaper.hyperswap import Hyperswap
                     swapper_app = Hyperswap()
                 else:
-                    from modules.swaper.inswapper import Inswapper
+                    from uniface.modules.swaper.inswapper import Inswapper
                     swapper_app = Inswapper()
                 current_swap_model = model_key
     return swapper_app

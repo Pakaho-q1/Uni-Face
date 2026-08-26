@@ -2,7 +2,7 @@ import unittest
 from unittest.mock import patch, MagicMock
 import numpy as np
 
-from modules.parser import MaskParser, get_combined_mask
+from uniface.modules.parser import MaskParser, get_combined_mask
 
 class TestMaskParser(unittest.TestCase):
 

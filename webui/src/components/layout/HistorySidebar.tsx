@@ -1,5 +1,5 @@
 import { useRef, useCallback } from 'react';
-import { X, RefreshCcw, Download, Trash2, PlayCircle, ChevronLeft, ChevronRight } from 'lucide-react';
+import { X, RefreshCcw, Download, Trash2, PlayCircle } from 'lucide-react';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Dialog, DialogContent, DialogTitle, DialogDescription } from '@/components/ui/dialog';
 import type { HistoryItem } from '@/hooks/useHistory';
@@ -41,8 +41,8 @@ export function HistorySidebar({
 
   return (
     <>
-      <aside className={`shrink-0 h-full bg-card transition-all duration-300 relative z-10 ${open ? 'w-[320px] border-r border-border' : 'w-0 overflow-hidden border-none'}`}>
-        <div className="w-[320px] h-full flex flex-col relative">
+      <aside className={`absolute md:relative left-0 top-0 bottom-0 z-[60] md:z-10 shrink-0 h-full bg-card transition-all duration-300 overflow-hidden ${open ? 'w-[85vw] max-w-[320px] md:w-[320px] border-r border-border shadow-2xl md:shadow-none' : 'w-0 border-none'}`}>
+        <div className="w-[85vw] max-w-[320px] md:w-[320px] h-full flex flex-col relative">
           <div className="h-14 shrink-0 flex items-center justify-between px-4 border-b border-border font-mono text-[11px] tracking-widest text-muted-foreground whitespace-nowrap">
             OUTPUT LIBRARY
             <div className="flex gap-2">
@@ -69,7 +69,7 @@ export function HistorySidebar({
                     <div className="w-full h-full relative flex items-center justify-center group" onClick={() => setLightboxItem(item)}>
                       {item.type === 'video' ? (
                         <>
-                          <video src={item.url} muted loop playsInline preload="none" className="w-full h-full object-cover pointer-events-none" />
+                          <video src={`${item.url}#t=0.001`} muted loop playsInline preload="metadata" className="w-full h-full object-cover pointer-events-none" />
                           <div className="absolute inset-0 bg-black/20 flex items-center justify-center pointer-events-none">
                             <PlayCircle size={28} className="text-white/80" />
                           </div>
@@ -104,7 +104,7 @@ export function HistorySidebar({
 
       {/* Lightbox Modal */}
       <Dialog open={!!lightboxItem} onOpenChange={(o) => !o && setLightboxItem(null)}>
-        <DialogContent className="max-w-5xl p-0 overflow-hidden border-none bg-black/95 shadow-2xl">
+        <DialogContent className="max-w-[95vw] w-full h-[95vh] p-0 overflow-hidden border-none bg-black/95 shadow-2xl flex items-center justify-center">
           <DialogTitle className="hidden">Preview</DialogTitle>
           <DialogDescription className="hidden">Lightbox preview of output</DialogDescription>
           {lightboxItem && (() => {
@@ -113,24 +113,36 @@ export function HistorySidebar({
             const hasNext = currentIndex < history.length - 1;
 
             return (
-              <div className="flex items-center justify-center w-full h-[85vh] relative group">
+              <div className="flex items-center justify-center w-full h-full relative group overflow-auto">
+                
+                {/* Edge Click Navigation Areas */}
                 {hasPrev && (
-                  <button className="absolute left-4 z-50 p-3 rounded-full bg-black/40 text-white hover:bg-black/80 transition-all opacity-0 group-hover:opacity-100 backdrop-blur-sm"
-                    onClick={(e) => { e.stopPropagation(); setLightboxItem(history[currentIndex - 1]) }}>
-                    <ChevronLeft size={32} />
-                  </button>
+                  <div 
+                    className="absolute left-0 top-0 w-1/4 h-full z-40 cursor-w-resize"
+                    onClick={(e) => { e.stopPropagation(); setLightboxItem(history[currentIndex - 1]); }}
+                  />
                 )}
+                
                 {hasNext && (
-                  <button className="absolute right-4 z-50 p-3 rounded-full bg-black/40 text-white hover:bg-black/80 transition-all opacity-0 group-hover:opacity-100 backdrop-blur-sm"
-                    onClick={(e) => { e.stopPropagation(); setLightboxItem(history[currentIndex + 1]) }}>
-                    <ChevronRight size={32} />
-                  </button>
+                  <div 
+                    className="absolute right-0 top-0 w-1/4 h-full z-40 cursor-e-resize"
+                    onClick={(e) => { e.stopPropagation(); setLightboxItem(history[currentIndex + 1]); }}
+                  />
                 )}
-                {lightboxItem.type === 'video' ? (
-                  <video src={lightboxItem.url} controls autoPlay loop className="max-w-full max-h-full object-contain" />
-                ) : (
-                  <img src={lightboxItem.url} alt="Preview" className="max-w-full max-h-full object-contain" />
-                )}
+
+                {/* Media Content with Zoom Support */}
+                <div className="w-full h-full flex items-center justify-center overflow-auto">
+                  {lightboxItem.type === 'video' ? (
+                    <video src={lightboxItem.url} controls autoPlay loop className="max-w-full max-h-full object-contain" />
+                  ) : (
+                    <img 
+                      src={lightboxItem.url} 
+                      alt="Preview" 
+                      className="max-w-full max-h-full object-contain cursor-zoom-in active:scale-150 transition-transform duration-200" 
+                      title="Click and hold to zoom"
+                    />
+                  )}
+                </div>
               </div>
             )
           })()}

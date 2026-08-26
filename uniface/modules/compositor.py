@@ -1,9 +1,9 @@
 import cv2
 import numpy as np
 
-from core.types import Face
-from modules.utils import face_math
-from modules.parser import get_combined_mask
+from uniface.core.types import Face
+from uniface.modules.utils import face_math
+from uniface.modules.parser import get_combined_mask
 
 class FaceCompositor:
     """
@@ -50,7 +50,7 @@ class FaceCompositor:
         
         matched_crop = target_crop.copy()
         for size in sizes:
-            source_crop = self.equalize_color(source_crop, matched_crop, (size, size))
+            matched_crop = self.equalize_color(source_crop, matched_crop, (size, size))
             
         matched_crop = self.equalize_color(source_crop, matched_crop, (w, h))
         return matched_crop

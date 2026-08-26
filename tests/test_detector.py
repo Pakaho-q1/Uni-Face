@@ -2,7 +2,7 @@ import unittest
 from unittest.mock import patch, MagicMock
 import numpy as np
 
-from modules.detector import NativeDetector, detect
+from uniface.modules.detector import NativeDetector, detect
 
 class TestNativeDetector(unittest.TestCase):
     
