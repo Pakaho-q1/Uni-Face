@@ -7,6 +7,7 @@ from uniface.core.config import ROOT_DIR
 class StateManager:
     def __init__(self):
         self.providers = ["CPUExecutionProvider"]
+        self.auth = None
         
         # Add ONNX SessionOptions to prevent thread thrashing
         import onnxruntime
@@ -46,6 +47,8 @@ class StateManager:
                     self.execution_thread_count = int(config["GLOBAL"]["execution_thread_count"])
                 if "video_encoder" in config["GLOBAL"]:
                     self.video_encoder = config["GLOBAL"]["video_encoder"]
+                if "auth" in config["GLOBAL"]:
+                    self.auth = config["GLOBAL"]["auth"]
             if "PROCESSORS" in config:
                 p = config["PROCESSORS"]
                 if "processors" in p: self.processors = p["processors"].split()

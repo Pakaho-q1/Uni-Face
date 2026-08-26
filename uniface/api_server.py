@@ -56,6 +56,9 @@ from uniface.core.state import state
 from uniface.core.video_service import process_video
 from uniface.core.service import process_image
 
+# Load configurations from uni-face.ini
+state.init(parse_args=False)
+
 app = FastAPI(title="Uni-Face API", version="1.0.0")
 
 app.add_middleware(
@@ -66,13 +69,56 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+class BasicAuthMiddleware:
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] not in ["http", "websocket"]:
+            return await self.app(scope, receive, send)
+            
+        if not state.auth:
+            return await self.app(scope, receive, send)
+
+        headers = dict(scope.get("headers", []))
+        auth_header = headers.get(b"authorization", b"").decode("utf-8")
+        
+        parts = state.auth.split(":", 1)
+        if len(parts) == 2:
+            expected_user, expected_pass = parts
+        else:
+            expected_user, expected_pass = "admin", state.auth
+            
+        expected = f"Basic {base64.b64encode(f'{expected_user}:{expected_pass}'.encode()).decode()}"
+        
+        if auth_header != expected:
+            if scope["type"] == "http":
+                await send({
+                    "type": "http.response.start",
+                    "status": 401,
+                    "headers": [(b"www-authenticate", b'Basic realm="Uni-Face"')]
+                })
+                await send({
+                    "type": "http.response.body",
+                    "body": b"Unauthorized",
+                })
+                return
+            elif scope["type"] == "websocket":
+                await send({"type": "websocket.close", "code": 1008})
+                return
+                
+        await self.app(scope, receive, send)
+
+app.add_middleware(BasicAuthMiddleware)
+
 # Replace with actual host/port if not localhost:8000
 API_BASE_URL = "http://localhost:8000"
 
 
 
-# --- WORKSPACE MANAGER ---
-WORKSPACE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "workspace")
+# --- Setup workspace paths
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+WORKSPACE_DIR = os.path.join(_ROOT, "workspace")
 
 def get_platform_dir(platform: str) -> str:
     if not platform: platform = "unknown"
@@ -719,11 +765,15 @@ async def websocket_job_status(websocket: WebSocket, job_id: str):
             del job_manager.active_websockets[job_id]
 
 # Serve WebUI compiled dist
-webui_dist = os.path.join(os.path.dirname(os.path.abspath(__file__)), "webui", "dist")
+# api_server.py is in uniface/ so we go up one directory to reach the root
+ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+webui_dist = os.path.join(ROOT_DIR, "webui", "dist")
 if os.path.exists(webui_dist):
     app.mount("/", StaticFiles(directory=webui_dist, html=True), name="webui")
 else:
-    app.mount("/static", StaticFiles(directory="static"), name="static")
+    static_dir = os.path.join(ROOT_DIR, "static")
+    if os.path.exists(static_dir):
+        app.mount("/static", StaticFiles(directory=static_dir), name="static")
     @app.get("/")
     async def root():
         return RedirectResponse(url="/static/index.html")
