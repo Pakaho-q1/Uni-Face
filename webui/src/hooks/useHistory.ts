@@ -50,12 +50,11 @@ export function useHistory(apiBase: string, platform: string) {
     const files = Array.from(selectedItems);
     if (!files.length) return;
     
-    const isDeletingAllVisible = files.length === history.length;
-    const deleteAll = isDeletingAllVisible && totalHistory > history.length;
+    const deleteAll = files.length === totalHistory;
     
     let confirmMsg = `คุณต้องการลบผลลัพธ์จำนวน ${files.length} รายการ ใช่หรือไม่?`;
-    if (deleteAll) {
-      confirmMsg = `คุณเลือกรูปภาพทั้งหมดที่แสดงอยู่ (${files.length} รูป)\nคุณต้องการลบทั้งหมดที่มีในระบบ (${totalHistory} รูป) ใช่หรือไม่?\n\n(หากต้องการลบเฉพาะที่แสดง ให้กดยกเลิกแล้วเลือกทีละรูป)`;
+    if (deleteAll && totalHistory > history.length) {
+      confirmMsg = `คุณเลือกรูปภาพทั้งหมดที่มีในระบบ (${totalHistory} รูป)\nคุณต้องการลบทั้งหมดเลย ใช่หรือไม่?\n\n(หากต้องการลบเฉพาะที่แสดง ให้กดยกเลิกแล้วเลือกทีละรูป)`;
     }
     
     if (!window.confirm(confirmMsg)) return;
@@ -97,9 +96,25 @@ export function useHistory(apiBase: string, platform: string) {
     setSelectedItems(newSet);
   };
 
-  const toggleSelectAll = (checked: boolean) => {
+  const toggleSelectAll = async (checked: boolean) => {
     if (checked) {
-      setSelectedItems(new Set(history.map(h => h.filename)));
+      if (history.length < totalHistory) {
+        // Fetch all items to select them
+        try {
+          const res = await fetch(`${apiBase}/api/v1/history?skip=0&limit=999999`, { 
+            headers: { 'X-Client-Platform': platform } 
+          });
+          const data = await res.json();
+          setSelectedItems(new Set((data.history || []).map((h: any) => h.filename)));
+          
+          // Optionally update the viewed history to show all, or leave it paginated.
+          // We will leave it paginated for performance, but all items will be checked.
+        } catch (e) {
+          console.error("Failed to fetch all history for selection");
+        }
+      } else {
+        setSelectedItems(new Set(history.map(h => h.filename)));
+      }
     } else {
       setSelectedItems(new Set());
     }

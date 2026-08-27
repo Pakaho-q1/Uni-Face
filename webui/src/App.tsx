@@ -5,6 +5,7 @@ import { SettingsPanel, useSettings } from '@/components/layout/SettingsPanel';
 import { BottomControlBar } from '@/components/layout/BottomControlBar';
 import { PreviewStage } from '@/components/stage/PreviewStage';
 import { ModelBuilderDialog } from '@/components/stage/ModelBuilderDialog';
+import { TargetSetManager } from '@/components/stage/TargetSetManager';
 import { Toaster } from 'sonner';
 import { useHistory, type HistoryItem } from '@/hooks/useHistory';
 import { useJobManager } from '@/hooks/useJobManager';
@@ -27,6 +28,10 @@ export default function App() {
   const [targetFiles, setTargetFiles] = useState<File[]>([]);
   
   const [lightboxItem, setLightboxItem] = useState<HistoryItem | null>(null);
+
+  const [targetType, setTargetType] = useState<"upload" | "set">("upload");
+  const [targetSetFiles, setTargetSetFiles] = useState<{filename: string, file_id: string, url: string}[]>([]);
+  const [targetManagerOpen, setTargetManagerOpen] = useState(false);
 
   const settings = useSettings();
   
@@ -82,7 +87,10 @@ export default function App() {
     if (jobManager.jobState.running) {
       jobManager.cancelJob();
     } else {
-      if ((sourceType === "image" && !sourceFile) || (sourceType === "model" && !sourceModel) || targetFiles.length === 0) {
+      const hasSource = (sourceType === "image" && sourceFile) || (sourceType === "model" && sourceModel);
+      const hasTarget = (targetType === "upload" && targetFiles.length > 0) || (targetType === "set" && targetSetFiles.length > 0);
+      
+      if (!hasSource || !hasTarget) {
         alert("Please select a Source and Target files.");
         return;
       }
@@ -106,11 +114,13 @@ export default function App() {
         similarity: settings.similarity,
         providers: [settings.executionProvider],
         execution_thread_count: settings.executionThreadCount[0],
-        skip_existing: settings.skipExisting
+        skip_existing: settings.skipExisting,
       };
 
       const src = sourceType === "image" ? sourceFile! : sourceModel;
-      jobManager.startJob(sourceType, src, targetFiles, jobSettings);
+      const tgts = targetType === "upload" ? targetFiles : targetSetFiles.map(f => f.file_id);
+      
+      jobManager.startJob(sourceType, src, targetType, tgts, jobSettings);
     }
   };
 
@@ -139,6 +149,7 @@ export default function App() {
           open={leftOpen}
           onClose={() => setLeftOpen(false)}
           history={historyManager.history}
+          totalHistory={historyManager.totalHistory}
           hasMore={historyManager.hasMoreHistory}
           onLoadMore={() => historyManager.fetchHistory(historyManager.historyPage + 1, true)}
           onRefresh={() => historyManager.fetchHistory(0, false)}
@@ -159,12 +170,17 @@ export default function App() {
           sourcePreview={sourcePreview}
           sourceModel={sourceModel}
           targetFiles={targetFiles}
+          targetType={targetType}
+          targetSetFiles={targetSetFiles}
           onSourceTypeChange={setSourceType}
           onSourceChange={handleSourceChange}
           onSourceModelChange={setSourceModel}
+          onTargetTypeChange={setTargetType}
           onTargetChange={handleTargetChange}
+          onTargetSetChange={setTargetSetFiles}
           availableModels={availableModels}
           onOpenModelBuilder={() => setBuilderOpen(true)}
+          onOpenTargetManager={() => setTargetManagerOpen(true)}
         />
 
         <SettingsPanel 
@@ -192,7 +208,16 @@ export default function App() {
           onModelBuilt={fetchModels}
         />
         
-        
+        <TargetSetManager
+          open={targetManagerOpen}
+          platform={PLATFORM}
+          chunkSizeMB={settings.hashChunkSize[0]}
+          onOpenChange={setTargetManagerOpen}
+          onSelectSet={(files) => {
+            setTargetSetFiles(files);
+            setTargetType("set");
+          }}
+        />
       </div>
       <Toaster theme="dark" position="bottom-center" />
     </div>

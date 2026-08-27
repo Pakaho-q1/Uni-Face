@@ -8,6 +8,7 @@ interface HistorySidebarProps {
   open: boolean;
   onClose: () => void;
   history: HistoryItem[];
+  totalHistory: number;
   hasMore: boolean;
   onLoadMore: () => void;
   onRefresh: () => void;
@@ -21,7 +22,7 @@ interface HistorySidebarProps {
 }
 
 export function HistorySidebar({
-  open, onClose, history, hasMore, onLoadMore, onRefresh,
+  open, onClose, history, totalHistory, hasMore, onLoadMore, onRefresh,
   selectedItems, onToggleSelect, onToggleSelectAll,
   onBulkDelete, onBulkDownload,
   lightboxItem, setLightboxItem
@@ -91,7 +92,10 @@ export function HistorySidebar({
           {selectedItems.size > 0 && (
             <div className="absolute bottom-6 left-1/2 -translate-x-1/2 z-50 glass px-4 py-2 rounded-xl flex items-center gap-4 whitespace-nowrap shadow-xl">
               <div className="flex items-center gap-2">
-                <Checkbox checked={selectedItems.size === history.length} onCheckedChange={(c) => onToggleSelectAll(!!c)} />
+                <Checkbox 
+                  checked={selectedItems.size > 0 && selectedItems.size >= totalHistory} 
+                  onCheckedChange={(c) => onToggleSelectAll(!!c)} 
+                />
                 <span className="font-mono text-xs">{selectedItems.size}</span>
               </div>
               <div className="w-px h-5 bg-border" />

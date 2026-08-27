@@ -27,6 +27,7 @@ export function useSettings() {
   const [maskTypes, setMaskTypes] = useStickyState<string[]>(['box'], 'setting_maskTypes');
   const [maskRegions, setMaskRegions] = useStickyState<string[]>(['skin', 'l_brow', 'r_brow', 'l_eye', 'r_eye', 'nose', 'mouth', 'u_lip', 'l_lip'], 'setting_maskRegions');
   const [skipExisting, setSkipExisting] = useStickyState(true, 'setting_skipExisting');
+  const [hashChunkSize, setHashChunkSize] = useStickyState([100], 'setting_hashChunkSize');
 
   return {
     executionProvider, setExecutionProvider,
@@ -43,7 +44,8 @@ export function useSettings() {
     previewRes, setPreviewRes,
     maskTypes, setMaskTypes,
     maskRegions, setMaskRegions,
-    skipExisting, setSkipExisting
+    skipExisting, setSkipExisting,
+    hashChunkSize, setHashChunkSize
   };
 }
 
@@ -79,6 +81,13 @@ export function SettingsPanel({ open, onClose, settings }: SettingsPanelProps) {
               Thread Count <span className="font-mono text-primary">{settings.executionThreadCount[0]}</span>
             </label>
             <Slider value={settings.executionThreadCount} onValueChange={settings.setExecutionThreadCount} max={32} min={1} step={1} />
+          </div>
+
+          <div className="space-y-2">
+            <label className="flex justify-between text-xs text-muted-foreground">
+              Hash Chunk Size (MB) <span className="font-mono text-primary">{settings.hashChunkSize[0]}MB</span>
+            </label>
+            <Slider value={settings.hashChunkSize} onValueChange={settings.setHashChunkSize} max={500} min={5} step={5} />
           </div>
 
           <div className="space-y-2">

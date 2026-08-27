@@ -132,10 +132,25 @@ def ensure_workspace(platform: str):
     source_dir = os.path.join(uploads_dir, "source")
     target_dir = os.path.join(uploads_dir, "target")
     outputs_dir = os.path.join(p_dir, "outputs")
+    target_sets_dir = os.path.join(p_dir, "target_sets")
     os.makedirs(source_dir, exist_ok=True)
     os.makedirs(target_dir, exist_ok=True)
     os.makedirs(outputs_dir, exist_ok=True)
+    os.makedirs(target_sets_dir, exist_ok=True)
     return uploads_dir, outputs_dir
+
+from uniface.core.db import init_db
+
+# Initialize Deduplication DB
+init_db()
+
+def get_target_sets_dir(platform: str) -> str:
+    p_dir = get_platform_dir(platform)
+    target_sets_dir = os.path.join(p_dir, "target_sets")
+    pool_dir = os.path.join(target_sets_dir, ".pool")
+    os.makedirs(target_sets_dir, exist_ok=True)
+    os.makedirs(pool_dir, exist_ok=True)
+    return target_sets_dir
 
 # --- JOB MANAGER ---
 class JobManager:
@@ -225,6 +240,256 @@ class JobManager:
         return None
 
 job_manager = JobManager()
+
+from fastapi.responses import FileResponse
+
+# --- TARGET SETS ENDPOINTS ---
+
+@app.get("/api/v1/target-sets")
+async def get_target_sets(x_client_platform: str = Header("unknown")):
+    sets_dir = get_target_sets_dir(x_client_platform)
+    result = []
+    for set_name in os.listdir(sets_dir):
+        if set_name == ".pool":
+            continue
+            
+        set_path = os.path.join(sets_dir, set_name)
+        if os.path.isdir(set_path):
+            files = []
+            for f in os.listdir(set_path):
+                if os.path.isfile(os.path.join(set_path, f)):
+                    # Note: UI will use this file_id to submit jobs
+                    file_id = f"set:{set_name}/{f}"
+                    files.append({
+                        "filename": f,
+                        "file_id": f"set:{set_name}/{f}",
+                        "url": f"/api/v1/target-sets/media/{set_name}/{f}?platform={x_client_platform}"
+                    })
+            result.append({"name": set_name, "files": files})
+    return {"target_sets": result}
+
+@app.post("/api/v1/target-sets")
+async def create_target_set(name: str = Form(...), x_client_platform: str = Header("unknown")):
+    # Sanitize name
+    safe_name = re.sub(r'[^a-zA-Z0-9_\-\s]', '', name).strip()
+    if not safe_name:
+        raise HTTPException(status_code=400, detail="Invalid set name")
+        
+    sets_dir = get_target_sets_dir(x_client_platform)
+    set_path = os.path.join(sets_dir, safe_name)
+    if os.path.exists(set_path):
+        raise HTTPException(status_code=400, detail="Target set already exists")
+        
+    os.makedirs(set_path)
+    return {"status": "ok", "name": safe_name}
+
+@app.delete("/api/v1/target-sets/{set_name}")
+async def delete_target_set(set_name: str, x_client_platform: str = Header("unknown")):
+    sets_dir = get_target_sets_dir(x_client_platform)
+    set_path = os.path.join(sets_dir, set_name)
+    if os.path.exists(set_path) and os.path.isdir(set_path):
+        shutil.rmtree(set_path)
+        return {"status": "ok"}
+    raise HTTPException(status_code=404, detail="Target set not found")
+
+from pydantic import BaseModel
+from uniface.core.db import get_hash_path, register_hash, remove_hash
+
+class FileHashInfo(BaseModel):
+    filename: str
+    hash: str
+
+class PreflightRequest(BaseModel):
+    files: list[FileHashInfo]
+
+@app.post("/api/v1/target-sets/preflight")
+async def target_sets_preflight(req: PreflightRequest):
+    """Checks which hashes already exist in the global pool."""
+    results = []
+    for f in req.files:
+        pool_path = get_hash_path(f.hash)
+        if pool_path and os.path.exists(pool_path):
+            results.append({"filename": f.filename, "hash": f.hash, "status": "exists"})
+        else:
+            if pool_path:
+                # Stale DB entry, file was deleted from pool
+                remove_hash(f.hash)
+            results.append({"filename": f.filename, "hash": f.hash, "status": "new"})
+    return {"results": results}
+
+class LinkRequest(BaseModel):
+    files: list[FileHashInfo]
+
+@app.post("/api/v1/target-sets/{set_name}/link")
+async def link_to_target_set(
+    set_name: str,
+    req: LinkRequest,
+    x_client_platform: str = Header("unknown")
+):
+    """Hardlinks existing files from the pool to the target set."""
+    sets_dir = get_target_sets_dir(x_client_platform)
+    set_path = os.path.join(sets_dir, set_name)
+    if not os.path.exists(set_path) or not os.path.isdir(set_path):
+        raise HTTPException(status_code=404, detail="Target set not found")
+        
+    linked = []
+    for f in req.files:
+        pool_path = get_hash_path(f.hash)
+        if not pool_path or not os.path.exists(pool_path):
+            continue # Hash not found, skip linking
+            
+        target_file_path = os.path.join(set_path, f.filename)
+        if os.path.exists(target_file_path):
+            continue # File already exists in this set, skip
+            
+        try:
+            os.link(pool_path, target_file_path)
+            linked.append({
+                "filename": f.filename,
+                "file_id": f"set:{set_name}/{f.filename}",
+                "url": f"/api/v1/target-sets/media/{set_name}/{f.filename}?platform={x_client_platform}"
+            })
+        except Exception as e:
+            print(f"Error hardlinking {pool_path} to {target_file_path}: {e}")
+            
+    return {"linked": linked}
+
+@app.post("/api/v1/target-sets/{set_name}/upload")
+async def upload_to_target_set(
+    set_name: str,
+    files: list[UploadFile] = File(...),
+    x_client_platform: str = Header("unknown")
+):
+    sets_dir = get_target_sets_dir(x_client_platform)
+    set_path = os.path.join(sets_dir, set_name)
+    pool_dir = os.path.join(sets_dir, ".pool")
+    if not os.path.exists(set_path) or not os.path.isdir(set_path):
+        raise HTTPException(status_code=404, detail="Target set not found")
+        
+    uploaded = []
+    for file in files:
+        temp_pool_path = os.path.join(pool_dir, f"temp_{uuid.uuid4().hex}.tmp")
+        md5 = hashlib.md5()
+        size = 0
+        
+        try:
+            # Chunked reading to prevent Backend OOM on 1-2GB files (Point 3)
+            with open(temp_pool_path, "wb") as buffer:
+                while chunk := await file.read(1024 * 1024 * 5):  # 5MB chunks
+                    md5.update(chunk)
+                    buffer.write(chunk)
+                    size += len(chunk)
+                    
+            file_hash = md5.hexdigest()
+            _, ext = os.path.splitext(file.filename)
+            pool_path = os.path.join(pool_dir, f"{file_hash}{ext}")
+            
+            # If hash doesn't exist, promote temp file to permanent pool file
+            if not os.path.exists(pool_path):
+                os.rename(temp_pool_path, pool_path)
+                register_hash(file_hash, pool_path, size)
+            else:
+                # File already in pool, remove the temp copy
+                os.remove(temp_pool_path)
+                
+            target_file_path = os.path.join(set_path, file.filename)
+            
+            # Hardlink from pool to target set
+            if not os.path.exists(target_file_path):
+                try:
+                    os.link(pool_path, target_file_path)
+                except Exception as e:
+                    print(f"Error linking {pool_path} to {target_file_path}: {e}")
+                    shutil.copy2(pool_path, target_file_path)
+                    
+            uploaded.append({
+                "filename": file.filename,
+                "file_id": f"set:{set_name}/{file.filename}",
+                "url": f"/api/v1/target-sets/media/{set_name}/{file.filename}?platform={x_client_platform}"
+            })
+        except Exception as e:
+            if os.path.exists(temp_pool_path):
+                os.remove(temp_pool_path)
+            raise HTTPException(status_code=500, detail=f"Upload failed: {str(e)}")
+            
+    return {"uploaded": uploaded}
+
+@app.post("/api/v1/system/gc")
+async def run_garbage_collection(x_client_platform: str = Header("unknown")):
+    """Sweeps the .pool folder and deletes files with st_nlink == 1 (Point 1)."""
+    sets_dir = get_target_sets_dir(x_client_platform)
+    pool_dir = os.path.join(sets_dir, ".pool")
+    
+    if not os.path.exists(pool_dir):
+        return {"status": "ok", "deleted_files": 0, "freed_bytes": 0}
+        
+    deleted_count = 0
+    freed_bytes = 0
+    
+    for filename in os.listdir(pool_dir):
+        file_path = os.path.join(pool_dir, filename)
+        if os.path.isfile(file_path):
+            stat = os.stat(file_path)
+            # If st_nlink == 1, only the .pool folder has a reference to this file.
+            if stat.st_nlink == 1:
+                freed_bytes += stat.st_size
+                os.remove(file_path)
+                # filename is like "hash.ext", extract hash
+                file_hash, _ = os.path.splitext(filename)
+                remove_hash(file_hash)
+                deleted_count += 1
+                
+    return {
+        "status": "ok", 
+        "deleted_files": deleted_count, 
+        "freed_bytes": freed_bytes
+    }
+
+class DeleteFilesRequest(BaseModel):
+    filenames: list[str]
+
+@app.post("/api/v1/target-sets/{set_name}/delete-files")
+async def delete_target_set_files(
+    set_name: str,
+    req: DeleteFilesRequest,
+    x_client_platform: str = Header("unknown")
+):
+    sets_dir = get_target_sets_dir(x_client_platform)
+    set_path = os.path.join(sets_dir, set_name)
+    if not os.path.exists(set_path) or not os.path.isdir(set_path):
+        raise HTTPException(status_code=404, detail="Target set not found")
+        
+    deleted = []
+    for filename in req.filenames:
+        file_path = os.path.join(set_path, filename)
+        if os.path.exists(file_path) and os.path.isfile(file_path):
+            os.remove(file_path)
+            deleted.append(filename)
+            
+    return {"status": "ok", "deleted": deleted}
+
+@app.get("/api/v1/target-sets/media/{set_name}/{filename}")
+async def get_target_set_media(
+    set_name: str, 
+    filename: str, 
+    platform: str = None,
+    x_client_platform: str = Header("unknown")
+):
+    actual_platform = platform if platform else x_client_platform
+    sets_dir = get_target_sets_dir(actual_platform)
+    file_path = os.path.join(sets_dir, set_name, filename)
+    
+    if not os.path.exists(file_path):
+        # Fallback search if requested via raw browser (no headers)
+        for p in os.listdir(WORKSPACE_DIR):
+            alt_path = os.path.join(WORKSPACE_DIR, p, "target_sets", set_name, filename)
+            if os.path.exists(alt_path):
+                file_path = alt_path
+                break
+                
+    if os.path.exists(file_path):
+        return FileResponse(file_path)
+    raise HTTPException(status_code=404, detail="File not found")
 
 # --- API ENDPOINTS ---
 @app.post("/api/v1/upload")
@@ -336,8 +601,14 @@ def run_job_background(job_id: str, req: JobStartRequest, x_client_platform: str
         import mimetypes
         
         for target_id in req.target_file_ids:
-            target_path = os.path.join(uploads_dir, target_id)
-            target_basename = os.path.basename(target_id)
+            if target_id.startswith("set:"):
+                # Format: set:set_name/filename.ext
+                target_rel_path = target_id[4:]
+                target_path = os.path.join(get_target_sets_dir(x_client_platform), target_rel_path)
+            else:
+                target_path = os.path.join(uploads_dir, target_id)
+                
+            target_basename = os.path.basename(target_path)
             source_basename = os.path.basename(req.source_file_id)
             mime_type, _ = mimetypes.guess_type(target_path)
             is_image = mime_type and mime_type.startswith('image')
@@ -684,8 +955,29 @@ async def delete_history(req: DeleteHistoryRequest, x_client_platform: str = Hea
     return {"deleted": deleted}
 
 import zipfile
+import asyncio
+from fastapi import BackgroundTasks
+
+def create_zip_sync(zip_path, filenames, outputs_dir):
+    found = 0
+    with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
+        for f in filenames:
+            safe_f = os.path.basename(f)
+            path = os.path.join(outputs_dir, safe_f)
+            if os.path.exists(path):
+                zf.write(path, safe_f)
+                found += 1
+    return found
+
+def cleanup_file(path: str):
+    try:
+        if os.path.exists(path):
+            os.remove(path)
+    except:
+        pass
+
 @app.post("/api/v1/history/download")
-async def download_history_bulk(req: DownloadHistoryRequest, x_client_platform: str = Header("unknown")):
+async def download_history_bulk(req: DownloadHistoryRequest, background_tasks: BackgroundTasks, x_client_platform: str = Header("unknown")):
     _, outputs_dir = ensure_workspace(x_client_platform)
     
     # If only 1 file, return it directly
@@ -702,19 +994,18 @@ async def download_history_bulk(req: DownloadHistoryRequest, x_client_platform: 
     zip_filename = f"uni_face_export_{uuid.uuid4().hex[:8]}.zip"
     zip_path = os.path.join(downloads_dir, zip_filename)
     
-    found = 0
-    with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
-        for f in req.filenames:
-            safe_f = os.path.basename(f)
-            path = os.path.join(outputs_dir, safe_f)
-            if os.path.exists(path):
-                zf.write(path, safe_f)
-                found += 1
+    # Run ZIP creation in a separate thread so it doesn't block the FastAPI event loop
+    found = await asyncio.to_thread(create_zip_sync, zip_path, req.filenames, outputs_dir)
                 
     if found == 0:
+        cleanup_file(zip_path)
         raise HTTPException(status_code=404, detail="No files found")
         
+    # Add cleanup to background tasks to run AFTER the user finishes downloading
+    background_tasks.add_task(cleanup_file, zip_path)
+    
     return FileResponse(zip_path, media_type="application/zip", filename="uni-face-export.zip")
+
 
 # WebSocket for live progress and preview
 @app.websocket("/api/v1/ws/jobs/{job_id}")

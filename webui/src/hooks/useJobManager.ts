@@ -131,18 +131,23 @@ export function useJobManager(apiBase: string, platform: string, onJobComplete?:
   const startJob = async (
     sourceType: "image" | "model",
     sourceFileOrModelId: File | string,
-    targetFiles: File[],
+    targetType: "upload" | "set",
+    targetFilesOrIds: (File | string)[],
     settings: any
   ) => {
     setState(prev => ({ ...prev, running: true, uploading: true, uploadProgress: 0, progress: 0 }));
     try {
       let sourceId = typeof sourceFileOrModelId === 'string' ? sourceFileOrModelId : '';
       
-      let totalFiles = targetFiles.length + (sourceType === "image" && sourceFileOrModelId instanceof File ? 1 : 0);
+      const uploadTargets = targetType === "upload" ? (targetFilesOrIds as File[]) : [];
+      const setTargets = targetType === "set" ? (targetFilesOrIds as string[]) : [];
+      
+      let totalFiles = uploadTargets.length + (sourceType === "image" && sourceFileOrModelId instanceof File ? 1 : 0);
       let filesCompleted = 0;
       let currentFileProgress = 0;
       
       const updateOverallProgress = (pct: number) => {
+        if (totalFiles === 0) return;
         currentFileProgress = pct;
         const overall = Math.round(((filesCompleted * 100) + currentFileProgress) / totalFiles);
         setState(prev => ({ ...prev, uploadProgress: overall }));
@@ -151,16 +156,20 @@ export function useJobManager(apiBase: string, platform: string, onJobComplete?:
       if (sourceType === "image" && sourceFileOrModelId instanceof File) {
         sourceId = await uploadFile(sourceFileOrModelId, "source", updateOverallProgress);
         filesCompleted++;
-        updateOverallProgress(0);
       }
-      
-      const targetIds = [];
-      for (const targetFile of targetFiles) {
-        const tId = await uploadFile(targetFile, "target", updateOverallProgress);
-        targetIds.push(tId);
-        filesCompleted++;
-        updateOverallProgress(0);
+
+      let targetIds: string[] = [];
+      if (targetType === "upload") {
+        for (const tf of uploadTargets) {
+          const tId = await uploadFile(tf, "target", updateOverallProgress);
+          targetIds.push(tId);
+          filesCompleted++;
+        }
+      } else {
+        targetIds = setTargets;
       }
+
+      setState(prev => ({ ...prev, uploading: false }));
 
       const jobRes = await fetch(`${apiBase}/api/v1/jobs`, {
         method: 'POST',

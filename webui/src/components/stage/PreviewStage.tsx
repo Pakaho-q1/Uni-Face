@@ -11,20 +11,27 @@ interface PreviewStageProps {
   sourceFile: File | null;
   sourcePreview: string;
   sourceModel: string;
+  targetType: "upload" | "set";
   targetFiles: File[];
+  targetSetFiles: {filename: string, file_id: string, url: string}[];
   onSourceTypeChange: (type: "image" | "model") => void;
   onSourceChange: (file: File) => void;
   onSourceModelChange: (model: string) => void;
+  onTargetTypeChange: (type: "upload" | "set") => void;
   onTargetChange: (files: File[]) => void;
+  onTargetSetChange: (files: {filename: string, file_id: string, url: string}[]) => void;
   availableModels: string[];
   onOpenModelBuilder: () => void;
+  onOpenTargetManager: () => void;
 }
 
 export function PreviewStage({
   previewVisible, jobState, 
   sourceType, sourceFile, sourcePreview, sourceModel, 
-  targetFiles, onSourceTypeChange, onSourceChange, onSourceModelChange, onTargetChange,
-  availableModels, onOpenModelBuilder
+  targetType, targetFiles, targetSetFiles,
+  onSourceTypeChange, onSourceChange, onSourceModelChange, 
+  onTargetTypeChange, onTargetChange,
+  availableModels, onOpenModelBuilder, onOpenTargetManager
 }: PreviewStageProps) {
   
   const sourceInputRef = useRef<HTMLInputElement>(null);
@@ -179,24 +186,56 @@ export function PreviewStage({
 
         {/* Target Card */}
         <div 
-          className={`flex items-center gap-3 p-3 bg-secondary/50 border rounded-xl cursor-pointer transition-all hover:bg-secondary hover:border-primary/50 ${targetFiles.length > 0 || targetDrag ? 'border-primary/50 shadow-[0_0_15px_rgba(var(--primary),0.1)]' : 'border-border'} ${targetDrag ? 'bg-secondary ring-2 ring-primary/50' : ''}`}
-          onClick={() => targetInputRef.current?.click()}
-          onDragOver={handleTargetDragOver}
-          onDragLeave={handleTargetDragLeave}
-          onDrop={handleTargetDrop}
+          className={`flex flex-col p-3 bg-secondary/50 border rounded-xl transition-all ${((targetType === "upload" && targetFiles.length > 0) || (targetType === "set" && targetSetFiles.length > 0)) || targetDrag ? 'border-primary/50 shadow-[0_0_15px_rgba(var(--primary),0.1)]' : 'border-border'} ${targetDrag ? 'bg-secondary ring-2 ring-primary/50' : ''}`}
+          onDragOver={targetType === "upload" ? handleTargetDragOver : undefined}
+          onDragLeave={targetType === "upload" ? handleTargetDragLeave : undefined}
+          onDrop={targetType === "upload" ? handleTargetDrop : undefined}
         >
-          <input type="file" accept="image/*,video/*" multiple hidden ref={targetInputRef} onChange={handleTargetChange} />
-          <div className="w-12 h-12 shrink-0 rounded-lg bg-background flex items-center justify-center text-muted-foreground">
-            <Video size={20} />
-          </div>
-          <div className="flex flex-col min-w-0 flex-1">
+          <div className="flex items-center justify-between mb-2">
             <span className="font-mono text-[10px] tracking-widest text-foreground">TARGET</span>
-            <span className="text-xs text-muted-foreground truncate">{targetFiles.length > 0 ? targetFiles.map(f => f.name).join(', ') : 'Click to upload · Multiple allowed'}</span>
+            <div className="flex bg-background border border-border rounded-md overflow-hidden text-[10px] font-mono">
+              <button 
+                className={`px-2 py-1 ${targetType === "upload" ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-secondary"}`}
+                onClick={() => onTargetTypeChange("upload")}
+              >
+                UPLOAD
+              </button>
+              <button 
+                className={`px-2 py-1 border-l border-border ${targetType === "set" ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-secondary"}`}
+                onClick={() => onTargetTypeChange("set")}
+              >
+                GALLERY
+              </button>
+            </div>
           </div>
-          {targetFiles.length > 0 && (
-            <span className="shrink-0 font-mono text-[10px] bg-primary/20 text-primary px-2 py-0.5 rounded-full">
-              {targetFiles.length}
-            </span>
+          
+          {targetType === "upload" ? (
+            <div className="flex items-center gap-3 cursor-pointer mt-1" onClick={() => targetInputRef.current?.click()}>
+              <input type="file" accept="image/*,video/*" multiple hidden ref={targetInputRef} onChange={handleTargetChange} />
+              <div className="w-12 h-12 shrink-0 rounded-lg bg-background flex items-center justify-center text-muted-foreground">
+                <Video size={20} />
+              </div>
+              <div className="flex flex-col min-w-0 flex-1">
+                <span className="text-xs text-muted-foreground truncate">{targetFiles.length > 0 ? targetFiles.map(f => f.name).join(', ') : 'Click or drag files here'}</span>
+              </div>
+              {targetFiles.length > 0 && (
+                <span className="shrink-0 font-mono text-[10px] bg-primary/20 text-primary px-2 py-0.5 rounded-full">
+                  {targetFiles.length}
+                </span>
+              )}
+            </div>
+          ) : (
+            <div className="flex items-center gap-2 mt-1 min-w-0">
+              <div className="flex-1 flex flex-col items-center justify-center border border-dashed border-border rounded-lg bg-background p-3 text-center cursor-pointer hover:bg-secondary/50" onClick={onOpenTargetManager}>
+                <span className="text-xs font-medium">{targetSetFiles.length > 0 ? `${targetSetFiles.length} items selected` : 'Click to select from Gallery'}</span>
+              </div>
+              <button 
+                className="shrink-0 h-10 px-3 bg-secondary hover:bg-primary hover:text-primary-foreground text-xs font-medium rounded-md border border-border transition-colors"
+                onClick={onOpenTargetManager}
+              >
+                BUILD
+              </button>
+            </div>
           )}
         </div>
       </div>
