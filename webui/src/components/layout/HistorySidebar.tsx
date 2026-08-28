@@ -1,7 +1,8 @@
-import { useRef, useCallback } from 'react';
-import { X, RefreshCcw, Download, Trash2, PlayCircle } from 'lucide-react';
+import { useRef, useCallback, useState } from 'react';
+import { X, RefreshCcw, Download, Trash2, PlayCircle, Loader2 } from 'lucide-react';
 import { Checkbox } from '@/components/ui/checkbox';
-import { Dialog, DialogContent, DialogTitle, DialogDescription } from '@/components/ui/dialog';
+import { Dialog, DialogContent, DialogTitle, DialogDescription, DialogFooter } from '@/components/ui/dialog';
+import { Button } from '@/components/ui/button';
 import type { HistoryItem } from '@/hooks/useHistory';
 
 interface HistorySidebarProps {
@@ -16,7 +17,7 @@ interface HistorySidebarProps {
   onToggleSelect: (filename: string, checked: boolean) => void;
   onToggleSelectAll: (checked: boolean) => void;
   onBulkDelete: () => void;
-  onBulkDownload: () => void;
+  onBulkDownload: () => Promise<boolean>;
   lightboxItem: HistoryItem | null;
   setLightboxItem: (item: HistoryItem | null) => void;
 }
@@ -27,6 +28,8 @@ export function HistorySidebar({
   onBulkDelete, onBulkDownload,
   lightboxItem, setLightboxItem
 }: HistorySidebarProps) {
+  const [isDownloading, setIsDownloading] = useState(false);
+  const [downloadConfirmOpen, setDownloadConfirmOpen] = useState(false);
   
   const observerRef = useRef<IntersectionObserver | null>(null);
   const bottomElementRef = useCallback((node: HTMLDivElement | null) => {
@@ -39,6 +42,25 @@ export function HistorySidebar({
       observerRef.current = observer;
     }
   }, [hasMore, onLoadMore]);
+
+  const getSelectedSizeText = () => {
+    let total = 0;
+    let missingSize = false;
+    selectedItems.forEach(filename => {
+      const item = history.find(h => h.filename === filename);
+      if (item && item.size) total += item.size;
+      else missingSize = true;
+    });
+    const mb = (total / (1024 * 1024)).toFixed(2);
+    return missingSize ? `${mb} MB (estimated)` : `${mb} MB`;
+  };
+
+  const handleDownloadConfirm = async () => {
+    setDownloadConfirmOpen(false);
+    setIsDownloading(true);
+    await onBulkDownload();
+    setIsDownloading(false);
+  };
 
   return (
     <>
@@ -67,7 +89,16 @@ export function HistorySidebar({
                     <div className={`absolute top-1.5 left-1.5 z-10 transition-opacity ${selectedItems.has(item.filename) ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}`} onClick={(e) => e.stopPropagation()}>
                       <Checkbox checked={selectedItems.has(item.filename)} onCheckedChange={(c) => onToggleSelect(item.filename, !!c)} />
                     </div>
-                    <div className="w-full h-full relative flex items-center justify-center group" onClick={() => setLightboxItem(item)}>
+                    <div 
+                      className="w-full h-full relative flex items-center justify-center group" 
+                      onClick={() => {
+                        if (selectedItems.size > 0) {
+                          onToggleSelect(item.filename, !selectedItems.has(item.filename));
+                        } else {
+                          setLightboxItem(item);
+                        }
+                      }}
+                    >
                       {item.type === 'video' ? (
                         <>
                           <video src={`${item.url}#t=0.001`} muted loop playsInline preload="metadata" className="w-full h-full object-cover pointer-events-none" />
@@ -99,12 +130,36 @@ export function HistorySidebar({
                 <span className="font-mono text-xs">{selectedItems.size}</span>
               </div>
               <div className="w-px h-5 bg-border" />
-              <button className="text-foreground hover:text-primary transition-colors" onClick={onBulkDownload}><Download size={16} /></button>
-              <button className="text-destructive hover:text-red-400 transition-colors" onClick={onBulkDelete}><Trash2 size={16} /></button>
+              <button 
+                className={`transition-colors ${isDownloading ? 'text-primary' : 'text-foreground hover:text-primary'}`} 
+                onClick={() => !isDownloading && setDownloadConfirmOpen(true)}
+                disabled={isDownloading}
+              >
+                {isDownloading ? <Loader2 size={16} className="animate-spin" /> : <Download size={16} />}
+              </button>
+              <button className="text-destructive hover:text-red-400 transition-colors" onClick={onBulkDelete} disabled={isDownloading}>
+                <Trash2 size={16} />
+              </button>
             </div>
           )}
         </div>
       </aside>
+
+      {/* Download Confirm Modal */}
+      <Dialog open={downloadConfirmOpen} onOpenChange={setDownloadConfirmOpen}>
+        <DialogContent className="sm:max-w-sm">
+          <DialogTitle>Confirm Download</DialogTitle>
+          <DialogDescription>
+            You have selected <strong>{selectedItems.size}</strong> item(s).
+            <br />
+            Total size: <strong>{getSelectedSizeText()}</strong>
+          </DialogDescription>
+          <DialogFooter className="mt-4">
+            <Button variant="outline" onClick={() => setDownloadConfirmOpen(false)}>Cancel</Button>
+            <Button onClick={handleDownloadConfirm}>Download</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* Lightbox Modal */}
       <Dialog open={!!lightboxItem} onOpenChange={(o) => !o && setLightboxItem(null)}>

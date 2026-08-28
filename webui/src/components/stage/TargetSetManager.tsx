@@ -10,6 +10,7 @@ interface TargetFile {
   filename: string;
   file_id: string;
   url: string;
+  duration?: number;
 }
 
 interface TargetSet {
@@ -23,6 +24,39 @@ interface TargetSetManagerProps {
   chunkSizeMB: number;
   onOpenChange: (open: boolean) => void;
   onSelectSet: (files: TargetFile[]) => void;
+}
+
+function VideoThumbnail({ url, initialDuration }: { url: string, initialDuration?: number }) {
+  const [duration, setDuration] = useState<string>("MP4");
+  const [needsMetadata, setNeedsMetadata] = useState<boolean>(!initialDuration);
+
+  useEffect(() => {
+    if (initialDuration && !isNaN(initialDuration)) {
+      const minutes = Math.floor(initialDuration / 60);
+      const seconds = Math.floor(initialDuration % 60);
+      setDuration(`${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`);
+      setNeedsMetadata(false);
+    }
+  }, [initialDuration]);
+
+  const handleLoadedMetadata = (e: React.SyntheticEvent<HTMLVideoElement, Event>) => {
+    if (!needsMetadata) return;
+    const video = e.currentTarget;
+    if (video.duration && !isNaN(video.duration)) {
+      const minutes = Math.floor(video.duration / 60);
+      const seconds = Math.floor(video.duration % 60);
+      setDuration(`${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`);
+    }
+  };
+
+  return (
+    <>
+      <video src={url} className="w-full h-full object-cover bg-black" onLoadedMetadata={handleLoadedMetadata} preload="metadata" />
+      <div className="absolute bottom-1 left-1 bg-black/60 rounded px-1.5 py-0.5 text-[10px] font-mono text-white flex items-center">
+        <Video size={10} className="mr-1" /> {duration}
+      </div>
+    </>
+  );
 }
 
 export function TargetSetManager({ open, platform, chunkSizeMB, onOpenChange, onSelectSet }: TargetSetManagerProps) {
@@ -413,17 +447,15 @@ export function TargetSetManager({ open, platform, chunkSizeMB, onOpenChange, on
                         </div>
                       </div>
                       
-                      {/* Media */}
                       {isVid ? (
-                        <video src={file.url} className="w-full h-full object-cover bg-black" />
+                        <VideoThumbnail url={file.url} initialDuration={file.duration} />
                       ) : (
-                        <img src={file.url} className="w-full h-full object-cover bg-black" alt={file.filename} />
-                      )}
-                      
-                      {isVid && (
-                        <div className="absolute bottom-1 left-1 bg-black/60 rounded px-1 text-[10px] text-white flex items-center">
-                          <Video size={10} className="mr-1" /> MP4
-                        </div>
+                        <>
+                          <img src={file.url} className="w-full h-full object-cover bg-black" alt={file.filename} />
+                          <div className="absolute bottom-1 left-1 bg-black/60 rounded px-1.5 py-0.5 text-[10px] font-mono text-white flex items-center">
+                            <ImageIcon size={10} className="mr-1" /> IMG
+                          </div>
+                        </>
                       )}
                     </div>
                   );

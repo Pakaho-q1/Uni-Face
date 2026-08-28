@@ -1,12 +1,12 @@
 import { useRef, useState } from 'react';
-import { Video, Image as ImageIcon } from 'lucide-react';
-import type { JobState } from '@/hooks/useJobManager';
+import { Video, Image as ImageIcon, User } from 'lucide-react';
+import type { ExtractedFace } from './ReferenceFaceSelector';
 
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 
 interface PreviewStageProps {
   previewVisible: boolean;
-  jobState: JobState;
+  jobState: any;
   sourceType: "image" | "model";
   sourceFile: File | null;
   sourcePreview: string;
@@ -14,24 +14,27 @@ interface PreviewStageProps {
   targetType: "upload" | "set";
   targetFiles: File[];
   targetSetFiles: {filename: string, file_id: string, url: string}[];
+  referenceFaces: ExtractedFace[];
+  referenceThreshold: number;
   onSourceTypeChange: (type: "image" | "model") => void;
   onSourceChange: (file: File) => void;
   onSourceModelChange: (model: string) => void;
   onTargetTypeChange: (type: "upload" | "set") => void;
   onTargetChange: (files: File[]) => void;
-  onTargetSetChange: (files: {filename: string, file_id: string, url: string}[]) => void;
   availableModels: string[];
   onOpenModelBuilder: () => void;
   onOpenTargetManager: () => void;
+  onOpenReferenceSelector: () => void;
 }
 
 export function PreviewStage({
   previewVisible, jobState, 
   sourceType, sourceFile, sourcePreview, sourceModel, 
   targetType, targetFiles, targetSetFiles,
+  referenceFaces, referenceThreshold,
   onSourceTypeChange, onSourceChange, onSourceModelChange, 
   onTargetTypeChange, onTargetChange,
-  availableModels, onOpenModelBuilder, onOpenTargetManager
+  availableModels, onOpenModelBuilder, onOpenTargetManager, onOpenReferenceSelector
 }: PreviewStageProps) {
   
   const sourceInputRef = useRef<HTMLInputElement>(null);
@@ -209,36 +212,58 @@ export function PreviewStage({
             </div>
           </div>
           
-          {targetType === "upload" ? (
-            <div className="flex items-center gap-3 cursor-pointer mt-1" onClick={() => targetInputRef.current?.click()}>
-              <input type="file" accept="image/*,video/*" multiple hidden ref={targetInputRef} onChange={handleTargetChange} />
-              <div className="w-12 h-12 shrink-0 rounded-lg bg-background flex items-center justify-center text-muted-foreground">
-                <Video size={20} />
+            {targetType === "upload" ? (
+              <div className="flex items-center gap-3 cursor-pointer mt-1" onClick={() => targetInputRef.current?.click()}>
+                <input type="file" accept="image/*,video/*" multiple hidden ref={targetInputRef} onChange={handleTargetChange} />
+                <div className="w-12 h-12 shrink-0 rounded-lg bg-background flex items-center justify-center text-muted-foreground relative">
+                  <Video size={20} />
+                  {referenceFaces.length > 0 && (
+                    <img src={referenceFaces[0].url} className="absolute inset-0 w-full h-full object-cover rounded-lg border-2 border-primary" alt="ref" />
+                  )}
+                </div>
+                <div className="flex flex-col min-w-0 flex-1">
+                  <span className="text-xs text-muted-foreground truncate">{targetFiles.length > 0 ? targetFiles.map(f => f.name).join(', ') : 'Click or drag files here'}</span>
+                </div>
+                {targetFiles.length > 0 && (
+                  <span className="shrink-0 font-mono text-[10px] bg-primary/20 text-primary px-2 py-0.5 rounded-full">
+                    {targetFiles.length}
+                  </span>
+                )}
               </div>
-              <div className="flex flex-col min-w-0 flex-1">
-                <span className="text-xs text-muted-foreground truncate">{targetFiles.length > 0 ? targetFiles.map(f => f.name).join(', ') : 'Click or drag files here'}</span>
+            ) : (
+              <div className="flex items-center gap-2 mt-1 min-w-0">
+                <div className="flex-1 flex flex-col items-center justify-center border border-dashed border-border rounded-lg bg-background p-3 text-center cursor-pointer hover:bg-secondary/50 relative overflow-hidden" onClick={onOpenTargetManager}>
+                  {referenceFaces.length > 0 && (
+                    <div className="absolute inset-0 bg-background/80 backdrop-blur-sm z-0" />
+                  )}
+                  {referenceFaces.length > 0 && (
+                    <img src={referenceFaces[0].url} className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 h-full opacity-50 z-0" alt="ref" />
+                  )}
+                  <span className="text-xs font-medium z-10">{targetSetFiles.length > 0 ? `${targetSetFiles.length} items selected` : 'Click to select from Gallery'}</span>
+                </div>
+                <button 
+                  className="shrink-0 h-10 px-3 bg-secondary hover:bg-primary hover:text-primary-foreground text-xs font-medium rounded-md border border-border transition-colors"
+                  onClick={onOpenTargetManager}
+                >
+                  BUILD
+                </button>
               </div>
-              {targetFiles.length > 0 && (
-                <span className="shrink-0 font-mono text-[10px] bg-primary/20 text-primary px-2 py-0.5 rounded-full">
-                  {targetFiles.length}
-                </span>
-              )}
-            </div>
-          ) : (
-            <div className="flex items-center gap-2 mt-1 min-w-0">
-              <div className="flex-1 flex flex-col items-center justify-center border border-dashed border-border rounded-lg bg-background p-3 text-center cursor-pointer hover:bg-secondary/50" onClick={onOpenTargetManager}>
-                <span className="text-xs font-medium">{targetSetFiles.length > 0 ? `${targetSetFiles.length} items selected` : 'Click to select from Gallery'}</span>
+            )}
+
+            {/* Reference Face Selector Button */}
+            {((targetType === "upload" && targetFiles.length > 0) || (targetType === "set" && targetSetFiles.length > 0)) && (
+              <div className="mt-3 flex justify-end">
+                <button 
+                  className={`flex items-center gap-2 px-3 py-1.5 text-xs font-medium rounded-md border transition-colors ${referenceFaces.length > 0 ? 'bg-primary/20 border-primary/50 text-primary hover:bg-primary/30' : 'bg-background border-border text-muted-foreground hover:bg-secondary'}`}
+                  onClick={onOpenReferenceSelector}
+                >
+                  <User size={14} />
+                  {referenceFaces.length > 0 ? `Targeting ${referenceFaces.length} Face(s) [${referenceThreshold}]` : 'Filter Specific Face'}
+                </button>
               </div>
-              <button 
-                className="shrink-0 h-10 px-3 bg-secondary hover:bg-primary hover:text-primary-foreground text-xs font-medium rounded-md border border-border transition-colors"
-                onClick={onOpenTargetManager}
-              >
-                BUILD
-              </button>
-            </div>
-          )}
+            )}
+          </div>
         </div>
-      </div>
       
     </main>
   );

@@ -40,6 +40,11 @@ graph TD
     Compositor --> Output[Result Image/Video]
 ```
 
+**ฟีเจอร์ระดับระบบล่าสุด (Architecture Highlights):**
+- **Specific Face Filtering**: ระดับ Service เพิ่มการทำ Cosine Similarity Check แบบ Cross-Frame เพื่อเลือกหน้าใดหน้าหนึ่งในเฟรมที่มีหลายหน้าได้แม่นยำ (ทำงานในขั้นตอน `run_detect`)
+- **Dynamic Size-Based Batching**: ตัว Frontend รองรับการแฮชไฟล์จำนวนมหาศาลโดยใช้ Batching ตามขนาด MB เพื่อไม่ให้ OOM เวลาอัพโหลดวิดีโอใหญ่ๆ
+- **Non-blocking Downloads**: ระบบสร้าง ZIP ไฟล์แบบ Async Threading ทำให้สามารถกดโหลดผลลัพธ์พร้อมกันหลายคนได้โดยไม่บล็อก Event Loop
+
 **หมายเหตุสำคัญ:**
 - Swaper/Restorer คืนค่ารูปแบบเดียวกันเสมอ `(frame, mask)` → เพิ่ม processor ใหม่เสียบเข้า pipeline ได้โดยไม่แก้ dispatcher
 - `Face` dataclass กำหนดที่เดียวใน `uniface/core/types.py` ใช้ร่วมทุก stage ห้ามแต่ละ module สร้าง schema เอง
@@ -50,7 +55,7 @@ graph TD
 |---|-------|--------|-------|--------|
 | 0 | Frame extraction | `uniface/modules/io/video_io.py` | video path | `List[frame:ndarray]` (image = 1 frame) |
 | 1 | Detect+Landmark+Recognize | `uniface/modules/detector.py` | `frame` | `List[Face]` = `{bbox, landmark_5/106, embedding, gender_age}` |
-| 2 | Face select | `uniface/core/service.py` | `List[Face]` + criteria | `Face` (target) |
+| 2 | Face select+filter | `uniface/core/service.py` | `List[Face]` + `ref_embs` | `Face` (target) or `None, None` if threshold missed |
 | 3 | Masking | `uniface/modules/parser.py` | `frame` + `Face` | `mask:ndarray (H,W,1)` |
 | 4 | Swap | `uniface/modules/swaper/<backend>.py` | `source_embedding` + `frame` + `Face` | `(frame, mask)` |
 | 5 | Restore (optional) | `uniface/modules/restorer.py` | `(frame, mask)` | `(frame, mask)` |
@@ -105,10 +110,8 @@ graph TD
 สถานะ: 🔴 not_started → 🟡 in_progress/stub → 🟢 done → ✅ tested
 **กติกา:** อัปเดตสถานะทันทีที่โมดูลเสร็จ+เทสผ่าน ห้ามข้ามไปโมดูลที่ dependency ยังไม่ 🟢/✅
 
-## 5. Next Steps (MVP1: swap ภาพนิ่ง ไม่ปรับสี/ไม่ restore)
-1. `uniface/core/types.py` + `uniface/core/config.py` — วาง data contract ให้นิ่งก่อน
-2. `uniface/modules/detector.py` — insightface adapter
-3. `uniface/modules/swaper/base.py` + `inswapper.py` — 1 backend ให้รันจบ pipeline ได้ก่อน
-4. `uniface/core/dispatcher.py` — ต่อ detector → swaper → output แบบไม่มี mask/restore
-5. Unit test คู่ทุกไฟล์ที่ทำ ก่อนไปโมดูลถัดไป
-6. ค่อยเพิ่ม parser/restorer/compositor/backend อื่นๆ + CLI/API adapter
+## 5. Next Steps (Current Focus)
+1. **Hyperswap & Simswap Integration**: Complete the remaining swap backends (`hyperswap.py` and `simswap.py`).
+2. **Automated Testing Suite**: Build robust tests using mock `onnxruntime` sessions to simulate pipeline execution without heavy models.
+3. **Multi-face Swap Support**: Extend the pipeline from filtering 1 specific face, to supporting swapping multiple different faces onto multiple target individuals in the same frame.
+4. **Performance Profiling**: Analyze `SwarmEngine` bottlenecks, specially on CPU fallbacks or disk IO bound steps.

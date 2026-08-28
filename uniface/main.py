@@ -18,8 +18,10 @@ def main():
     if args.command == "cli":
         run_cli()
     elif args.command == "serve":
+        from uniface.core.state import state
+        state.init(parse_args=False)
         serve_parser = argparse.ArgumentParser(prog="main.py serve")
-        serve_parser.add_argument("--port", type=int, default=8000, help="Port to run the API server on")
+        serve_parser.add_argument("--port", type=int, default=state.server_port, help="Port to run the API server on")
         serve_args = serve_parser.parse_args(sys.argv[2:])
         run_server(port=serve_args.port)
     elif args.command == "models":

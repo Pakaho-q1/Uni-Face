@@ -245,6 +245,35 @@ from fastapi.responses import FileResponse
 
 # --- TARGET SETS ENDPOINTS ---
 
+def get_video_duration(file_path: str):
+    import cv2
+    try:
+        cap = cv2.VideoCapture(file_path)
+        fps = cap.get(cv2.CAP_PROP_FPS)
+        frames = cap.get(cv2.CAP_PROP_FRAME_COUNT)
+        cap.release()
+        if fps > 0 and frames > 0:
+            return frames / fps
+    except:
+        pass
+    return None
+
+def update_set_meta(set_path: str, filename: str, info: dict):
+    import json
+    meta_path = os.path.join(set_path, ".meta.json")
+    meta = {}
+    if os.path.exists(meta_path):
+        try:
+            with open(meta_path, "r") as f:
+                meta = json.load(f)
+        except:
+            pass
+    if filename not in meta:
+        meta[filename] = {}
+    meta[filename].update(info)
+    with open(meta_path, "w") as f:
+        json.dump(meta, f)
+
 @app.get("/api/v1/target-sets")
 async def get_target_sets(x_client_platform: str = Header("unknown")):
     sets_dir = get_target_sets_dir(x_client_platform)
@@ -255,16 +284,30 @@ async def get_target_sets(x_client_platform: str = Header("unknown")):
             
         set_path = os.path.join(sets_dir, set_name)
         if os.path.isdir(set_path):
+            meta_path = os.path.join(set_path, ".meta.json")
+            meta = {}
+            if os.path.exists(meta_path):
+                import json
+                try:
+                    with open(meta_path, "r") as f:
+                        meta = json.load(f)
+                except:
+                    pass
+
             files = []
             for f in os.listdir(set_path):
+                if f == ".meta.json":
+                    continue
                 if os.path.isfile(os.path.join(set_path, f)):
                     # Note: UI will use this file_id to submit jobs
-                    file_id = f"set:{set_name}/{f}"
-                    files.append({
+                    file_info = {
                         "filename": f,
                         "file_id": f"set:{set_name}/{f}",
                         "url": f"/api/v1/target-sets/media/{set_name}/{f}?platform={x_client_platform}"
-                    })
+                    }
+                    if f in meta and "duration" in meta[f] and meta[f]["duration"] is not None:
+                        file_info["duration"] = meta[f]["duration"]
+                    files.append(file_info)
             result.append({"name": set_name, "files": files})
     return {"target_sets": result}
 
@@ -344,6 +387,13 @@ async def link_to_target_set(
             
         try:
             os.link(pool_path, target_file_path)
+            
+            # Calculate and save duration for video
+            _, ext = os.path.splitext(f.filename)
+            if ext.lower() in ['.mp4', '.mov', '.avi', '.mkv', '.webm']:
+                duration = get_video_duration(pool_path)
+                update_set_meta(set_path, f.filename, {"duration": duration})
+            
             linked.append({
                 "filename": f.filename,
                 "file_id": f"set:{set_name}/{f.filename}",
@@ -398,9 +448,14 @@ async def upload_to_target_set(
             if not os.path.exists(target_file_path):
                 try:
                     os.link(pool_path, target_file_path)
-                except Exception as e:
-                    print(f"Error linking {pool_path} to {target_file_path}: {e}")
+                except Exception:
+                    import shutil
                     shutil.copy2(pool_path, target_file_path)
+            
+            # Calculate and save duration for video
+            if ext.lower() in ['.mp4', '.mov', '.avi', '.mkv', '.webm']:
+                duration = get_video_duration(pool_path)
+                update_set_meta(set_path, file.filename, {"duration": duration})
                     
             uploaded.append({
                 "filename": file.filename,
@@ -465,6 +520,20 @@ async def delete_target_set_files(
         if os.path.exists(file_path) and os.path.isfile(file_path):
             os.remove(file_path)
             deleted.append(filename)
+            
+            # Remove metadata entry for this file
+            meta_path = os.path.join(set_path, ".meta.json")
+            if os.path.exists(meta_path):
+                import json
+                try:
+                    with open(meta_path, "r") as f:
+                        meta = json.load(f)
+                    if filename in meta:
+                        del meta[filename]
+                        with open(meta_path, "w") as f:
+                            json.dump(meta, f)
+                except:
+                    pass
             
     return {"status": "ok", "deleted": deleted}
 
@@ -547,6 +616,8 @@ class JobStartRequest(BaseModel):
     providers: list[str] = ["cpu"]
     execution_thread_count: int = 4
     skip_existing: bool = True
+    reference_face_ids: list[str] = []
+    reference_threshold: float = 0.6
 
 def run_job_background(job_id: str, req: JobStartRequest, x_client_platform: str):
     uploads_dir, outputs_dir = ensure_workspace(x_client_platform)
@@ -566,6 +637,12 @@ def run_job_background(job_id: str, req: JobStartRequest, x_client_platform: str
     state.mask_types = req.mask_types
     state.mask_regions = req.mask_regions
     state.similarity = req.similarity
+    state.reference_face_ids = req.reference_face_ids
+    state.reference_threshold = req.reference_threshold
+    
+    print(f"[DEBUG] Job {job_id} reference_face_ids: {len(state.reference_face_ids)}")
+    print(f"[DEBUG] Job {job_id} reference_threshold: {state.reference_threshold}")
+    
     if hasattr(state, "_parse_providers"):
         state._parse_providers(" ".join(req.providers))
     state.execution_thread_count = req.execution_thread_count
@@ -909,6 +986,7 @@ async def get_history(x_client_platform: str = Header("unknown"), skip: int = 0,
                     "filename": f,
                     "url": f"/api/v1/history/{f}?platform={x_client_platform}",
                     "type": mtype,
+                    "size": os.path.getsize(path),
                     "created_at": os.path.getmtime(path)
                 })
         # Sort by newest first
@@ -991,6 +1069,15 @@ async def download_history_bulk(req: DownloadHistoryRequest, background_tasks: B
     # Multiple files -> zip
     downloads_dir = os.path.join(get_platform_dir(x_client_platform), "downloads")
     os.makedirs(downloads_dir, exist_ok=True)
+    
+    # Clean up old zips to save space (since Windows locks prevent immediate deletion)
+    for f in os.listdir(downloads_dir):
+        if f.endswith(".zip"):
+            try:
+                os.remove(os.path.join(downloads_dir, f))
+            except:
+                pass
+
     zip_filename = f"uni_face_export_{uuid.uuid4().hex[:8]}.zip"
     zip_path = os.path.join(downloads_dir, zip_filename)
     
@@ -1001,11 +1088,139 @@ async def download_history_bulk(req: DownloadHistoryRequest, background_tasks: B
         cleanup_file(zip_path)
         raise HTTPException(status_code=404, detail="No files found")
         
-    # Add cleanup to background tasks to run AFTER the user finishes downloading
-    background_tasks.add_task(cleanup_file, zip_path)
-    
     return FileResponse(zip_path, media_type="application/zip", filename="uni-face-export.zip")
 
+
+@app.post("/api/v1/extract-faces")
+async def extract_faces(
+    x_client_platform: str = Header("unknown"),
+    target_type: str = Form(...),
+    sample_count: int = Form(5),
+    files: list[UploadFile] = File(default=[]),
+    file_ids: list[str] = Form(default=[])
+):
+    import cv2
+    import numpy as np
+    import base64
+    from uniface.modules.detector import detect
+    
+    extracted_faces = []
+    seen_embeddings = []
+    
+    def add_faces_from_image(img_arr, limit):
+        if img_arr is None: return 0
+        faces = detect(img_arr)
+        if not faces: return 0
+        
+        added = 0
+        for f in faces:
+            # Check similarity to avoid duplicate faces
+            if seen_embeddings:
+                sims = [np.dot(f.embedding, prev_emb)/(np.linalg.norm(f.embedding)*np.linalg.norm(prev_emb)+1e-8) for prev_emb in seen_embeddings]
+                if max(sims) > 0.85:
+                    continue # Skip duplicates
+                    
+            seen_embeddings.append(f.embedding)
+            
+            box = f.bbox.astype(int)
+            x1, y1, x2, y2 = max(0, box[0]), max(0, box[1]), min(img_arr.shape[1], box[2]), min(img_arr.shape[0], box[3])
+            crop = img_arr[y1:y2, x1:x2]
+            
+            if crop.size == 0: continue
+            
+            # encode to base64
+            _, buffer = cv2.imencode('.jpg', crop)
+            b64 = base64.b64encode(buffer).decode('utf-8')
+            
+            # serialize embedding to base64 for ID
+            emb_b64 = base64.b64encode(f.embedding.tobytes()).decode('utf-8')
+            
+            extracted_faces.append({
+                "id": emb_b64,
+                "url": f"data:image/jpeg;base64,{b64}"
+            })
+            added += 1
+            if len(extracted_faces) >= limit:
+                break
+        return added
+
+    # Process files locally
+    uploads_dir = os.path.join(get_platform_dir(x_client_platform), "uploads")
+    target_sets_dir = get_target_sets_dir(x_client_platform)
+    
+    try:
+        if target_type == "upload":
+            for uf in files:
+                ext = os.path.splitext(uf.filename)[1].lower()
+                if ext in ['.mp4', '.mov', '.avi', '.mkv', '.webm']:
+                    temp_path = os.path.join(uploads_dir, f"temp_scan_{uuid.uuid4().hex}{ext}")
+                    os.makedirs(uploads_dir, exist_ok=True)
+                    with open(temp_path, "wb") as f:
+                        f.write(await uf.read())
+                    try:
+                        cap = cv2.VideoCapture(temp_path)
+                        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+                        if total_frames > 0:
+                            num_samples = min(sample_count, total_frames)
+                            frame_indices = np.random.choice(total_frames, num_samples, replace=False)
+                            for frame_idx in frame_indices:
+                                cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+                                ret, frame = cap.read()
+                                if ret:
+                                    add_faces_from_image(frame, sample_count)
+                                    if len(extracted_faces) >= sample_count:
+                                        break
+                        cap.release()
+                    finally:
+                        if os.path.exists(temp_path):
+                            os.remove(temp_path)
+                else:
+                    contents = await uf.read()
+                    nparr = np.frombuffer(contents, np.uint8)
+                    img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+                    if img is not None:
+                        add_faces_from_image(img, sample_count)
+                
+                if len(extracted_faces) >= sample_count:
+                    break
+        else:
+            for fid in file_ids:
+                if fid.startswith("set:"):
+                    path = os.path.join(target_sets_dir, fid[4:])
+                else:
+                    path = os.path.join(uploads_dir, fid)
+                    
+                if os.path.exists(path):
+                    import mimetypes
+                    mt, _ = mimetypes.guess_type(path)
+                    if mt and mt.startswith('video'):
+                        cap = cv2.VideoCapture(path)
+                        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+                        if total_frames > 0:
+                            # Sample up to `sample_count` frames randomly
+                            num_samples = min(sample_count, total_frames)
+                            frame_indices = np.random.choice(total_frames, num_samples, replace=False)
+                            for frame_idx in frame_indices:
+                                cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+                                ret, frame = cap.read()
+                                if ret:
+                                    add_faces_from_image(frame, sample_count)
+                                    if len(extracted_faces) >= sample_count:
+                                        break
+                        cap.release()
+                    else:
+                        img = cv2.imread(path)
+                        if img is not None:
+                            add_faces_from_image(img, sample_count)
+                            
+                if len(extracted_faces) >= sample_count:
+                    break
+    except Exception as e:
+        print(f"Error extracting faces: {e}")
+        
+    return {
+        "faces": extracted_faces
+    }
 
 # WebSocket for live progress and preview
 @app.websocket("/api/v1/ws/jobs/{job_id}")

@@ -5,6 +5,7 @@ export type HistoryItem = {
   url: string;
   type: string;
   created_at: number;
+  size?: number;
 }
 
 export function useHistory(apiBase: string, platform: string) {
@@ -70,23 +71,31 @@ export function useHistory(apiBase: string, platform: string) {
 
   const bulkDownload = async () => {
     const files = Array.from(selectedItems);
-    if (!files.length) return;
+    if (!files.length) return false;
     
-    const res = await fetch(`${apiBase}/api/v1/history/download`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-Client-Platform': platform },
-      body: JSON.stringify({ filenames: files })
-    });
-    
-    const blob = await res.blob();
-    const url = window.URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = files.length === 1 ? files[0] : `uni-face-export-${Date.now()}.zip`;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    window.URL.revokeObjectURL(url);
+    try {
+      const res = await fetch(`${apiBase}/api/v1/history/download`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Client-Platform': platform },
+        body: JSON.stringify({ filenames: files })
+      });
+      
+      const blob = await res.blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = files.length === 1 ? files[0] : `uni-face-export-${Date.now()}.zip`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      window.URL.revokeObjectURL(url);
+      
+      setSelectedItems(new Set());
+      return true;
+    } catch (e) {
+      console.error("Download failed", e);
+      return false;
+    }
   };
 
   const toggleSelection = (filename: string, checked: boolean) => {

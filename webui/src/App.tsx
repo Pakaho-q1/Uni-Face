@@ -6,15 +6,16 @@ import { BottomControlBar } from '@/components/layout/BottomControlBar';
 import { PreviewStage } from '@/components/stage/PreviewStage';
 import { ModelBuilderDialog } from '@/components/stage/ModelBuilderDialog';
 import { TargetSetManager } from '@/components/stage/TargetSetManager';
+import { ReferenceFaceSelector } from '@/components/stage/ReferenceFaceSelector';
 import { Toaster } from 'sonner';
 import { useHistory, type HistoryItem } from '@/hooks/useHistory';
 import { useJobManager } from '@/hooks/useJobManager';
 
-const API_BASE = `http://${window.location.hostname}:8000`;
+const API_BASE = import.meta.env.DEV ? `http://${window.location.hostname}:8000` : window.location.origin;
 const PLATFORM = "webui_react";
 
 export default function App() {
-  const [leftOpen, setLeftOpen] = useState(true);
+  const [leftOpen, setLeftOpen] = useState(false);
   const [rightOpen, setRightOpen] = useState(false);
   const [previewVisible, setPreviewVisible] = useState(true);
 
@@ -32,6 +33,10 @@ export default function App() {
   const [targetType, setTargetType] = useState<"upload" | "set">("upload");
   const [targetSetFiles, setTargetSetFiles] = useState<{filename: string, file_id: string, url: string}[]>([]);
   const [targetManagerOpen, setTargetManagerOpen] = useState(false);
+
+  const [referenceSelectorOpen, setReferenceSelectorOpen] = useState(false);
+  const [referenceFaces, setReferenceFaces] = useState<any[]>([]); // ExtractedFace[]
+  const [referenceThreshold, setReferenceThreshold] = useState<number>(0.6);
 
   const settings = useSettings();
   
@@ -115,6 +120,8 @@ export default function App() {
         providers: [settings.executionProvider],
         execution_thread_count: settings.executionThreadCount[0],
         skip_existing: settings.skipExisting,
+        reference_face_ids: referenceFaces.map(f => f.id),
+        reference_threshold: referenceThreshold
       };
 
       const src = sourceType === "image" ? sourceFile! : sourceModel;
@@ -172,15 +179,17 @@ export default function App() {
           targetFiles={targetFiles}
           targetType={targetType}
           targetSetFiles={targetSetFiles}
+          referenceFaces={referenceFaces}
+          referenceThreshold={referenceThreshold}
           onSourceTypeChange={setSourceType}
           onSourceChange={handleSourceChange}
           onSourceModelChange={setSourceModel}
           onTargetTypeChange={setTargetType}
           onTargetChange={handleTargetChange}
-          onTargetSetChange={setTargetSetFiles}
           availableModels={availableModels}
           onOpenModelBuilder={() => setBuilderOpen(true)}
           onOpenTargetManager={() => setTargetManagerOpen(true)}
+          onOpenReferenceSelector={() => setReferenceSelectorOpen(true)}
         />
 
         <SettingsPanel 
@@ -216,6 +225,23 @@ export default function App() {
           onSelectSet={(files) => {
             setTargetSetFiles(files);
             setTargetType("set");
+          }}
+        />
+
+        <ReferenceFaceSelector
+          open={referenceSelectorOpen}
+          onOpenChange={setReferenceSelectorOpen}
+          platform={PLATFORM}
+          apiBase={API_BASE}
+          targetType={targetType}
+          sampleCount={settings.scanSampleCount[0]}
+          targetFiles={targetFiles}
+          targetSetFiles={targetSetFiles.map(f => f.file_id)}
+          initialFaces={referenceFaces}
+          initialThreshold={referenceThreshold}
+          onConfirm={(faces, threshold) => {
+            setReferenceFaces(faces);
+            setReferenceThreshold(threshold);
           }}
         />
       </div>

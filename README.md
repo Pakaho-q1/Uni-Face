@@ -22,6 +22,9 @@
 | Feature | Detail |
 |---|---|
 | 🚀 **Speed-first design** | Optimized pipeline with TRT → CUDA → CPU execution provider chain |
+| 🎯 **Specific Face Filtering** | Swap only the person you want by scanning and selecting their face |
+| 🧠 **Smart Memory Batching** | Dynamic size-based chunk hashing prevents memory overflow on huge datasets |
+| 🗂️ **Gallery Workflows** | Create subsets, select thousands of items instantly, and download in bulk via non-blocking ZIP streams |
 | 🖥️ **Web UI** | React 19 + Tailwind CSS frontend, no browser extension needed |
 | ⌨️ **CLI** | Full command-line interface for scripting and automation |
 | 🔧 **Config-driven** | Swap backends, enhancers, and providers swappable via `uni-face.ini` |

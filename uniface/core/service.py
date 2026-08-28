@@ -25,8 +25,50 @@ class FaceService:
                 print("No face detected in target image.")
             return None, None
             
-        target_faces.sort(key=lambda x: (x.bbox[2]-x.bbox[0])*(x.bbox[3]-x.bbox[1]), reverse=True)
-        target_face = target_faces[0]
+        target_face = None
+        
+        # Reference Face Filtering
+        if hasattr(state, 'reference_face_ids') and state.reference_face_ids:
+            import base64
+            
+            # Decode reference embeddings
+            ref_embs = []
+            for b64_emb in state.reference_face_ids:
+                try:
+                    emb_bytes = base64.b64decode(b64_emb)
+                    emb = np.frombuffer(emb_bytes, dtype=np.float32)
+                    ref_embs.append(emb / (np.linalg.norm(emb) + 1e-8))
+                except Exception:
+                    continue
+                    
+            if ref_embs:
+                best_sim = -1
+                best_face = None
+                
+                for face in target_faces:
+                    if face.embedding is None: continue
+                    face_norm = face.embedding / (np.linalg.norm(face.embedding) + 1e-8)
+                    
+                    for ref_emb in ref_embs:
+                        sim = np.dot(face_norm, ref_emb)
+                        if sim > best_sim:
+                            best_sim = sim
+                            best_face = face
+                
+                # Check threshold
+                threshold = getattr(state, 'reference_threshold', 0.6)
+                if best_face is not None and best_sim >= threshold:
+                    target_face = best_face
+                else:
+                    return None, None
+            else:
+                # Fallback if parsing failed
+                target_faces.sort(key=lambda x: (x.bbox[2]-x.bbox[0])*(x.bbox[3]-x.bbox[1]), reverse=True)
+                target_face = target_faces[0]
+        if not target_face:
+            # Fallback to largest face
+            target_faces.sort(key=lambda x: (x.bbox[2]-x.bbox[0])*(x.bbox[3]-x.bbox[1]), reverse=True)
+            target_face = target_faces[0]
         
         # 2. Get/Detect Source Face
         if isinstance(source, np.ndarray):

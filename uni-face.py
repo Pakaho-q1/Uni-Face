@@ -39,10 +39,11 @@ if len(sys.argv) > 1:
         sys.exit(0)
         
     elif cmd in ["serve", "webui"]:
+        state.init(parse_args=False)
         import argparse
         import uvicorn
         serve_parser = argparse.ArgumentParser(prog=f"uni-face.py {cmd}")
-        serve_parser.add_argument("--port", type=int, default=8000, help="Port to run the API server on")
+        serve_parser.add_argument("--port", type=int, default=state.server_port, help="Port to run the API server on")
         serve_args = serve_parser.parse_args(sys.argv[2:])
         
         # Start the real FastAPI server with the WebUI

@@ -28,6 +28,7 @@ export function useSettings() {
   const [maskRegions, setMaskRegions] = useStickyState<string[]>(['skin', 'l_brow', 'r_brow', 'l_eye', 'r_eye', 'nose', 'mouth', 'u_lip', 'l_lip'], 'setting_maskRegions');
   const [skipExisting, setSkipExisting] = useStickyState(true, 'setting_skipExisting');
   const [hashChunkSize, setHashChunkSize] = useStickyState([100], 'setting_hashChunkSize');
+  const [scanSampleCount, setScanSampleCount] = useStickyState([5], 'setting_scanSampleCount');
 
   return {
     executionProvider, setExecutionProvider,
@@ -45,7 +46,8 @@ export function useSettings() {
     maskTypes, setMaskTypes,
     maskRegions, setMaskRegions,
     skipExisting, setSkipExisting,
-    hashChunkSize, setHashChunkSize
+    hashChunkSize, setHashChunkSize,
+    scanSampleCount, setScanSampleCount
   };
 }
 
@@ -247,6 +249,13 @@ export function SettingsPanel({ open, onClose, settings }: SettingsPanelProps) {
             Preview Frame Every <span className="font-mono text-primary">{settings.previewFreq[0]}</span>
           </label>
           <Slider value={settings.previewFreq} onValueChange={settings.setPreviewFreq} max={60} min={1} step={1} />
+        </div>
+
+        <div className="space-y-2">
+          <label className="flex justify-between text-xs text-muted-foreground">
+            Face Scan Sample Limit <span className="font-mono text-primary">{settings.scanSampleCount[0]}</span>
+          </label>
+          <Slider value={settings.scanSampleCount} onValueChange={settings.setScanSampleCount} max={20} min={1} step={1} />
         </div>
         
         <div className="space-y-2">

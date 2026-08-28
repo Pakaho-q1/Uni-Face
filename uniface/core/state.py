@@ -19,6 +19,7 @@ class StateManager:
         self.processors = ["swap", "restore", "color"]
         self.execution_thread_count = 4
         self.video_encoder = "h264_nvenc"
+        self.server_port = 8000
         
         self.swap_model = "inswapper_128"
         self.swap_weight = 0.65
@@ -34,6 +35,8 @@ class StateManager:
         self.mask_types: List[str] = ['box']
         self.mask_regions: List[str] = ['skin', 'l_brow', 'r_brow', 'l_eye', 'r_eye', 'nose', 'mouth', 'u_lip', 'l_lip']
         self.similarity: bool = False
+        self.reference_face_ids: List[str] = []
+        self.reference_threshold: float = 0.6
 
     def init(self, parse_args=True):
         ini_path = ROOT_DIR / "uni-face.ini"
@@ -47,6 +50,8 @@ class StateManager:
                     self.execution_thread_count = int(config["GLOBAL"]["execution_thread_count"])
                 if "video_encoder" in config["GLOBAL"]:
                     self.video_encoder = config["GLOBAL"]["video_encoder"]
+                if "server_port" in config["GLOBAL"]:
+                    self.server_port = int(config["GLOBAL"]["server_port"])
                 if "auth" in config["GLOBAL"]:
                     self.auth = config["GLOBAL"]["auth"]
             if "PROCESSORS" in config:
