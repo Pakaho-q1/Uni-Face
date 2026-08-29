@@ -1,38 +1,36 @@
-import argparse
 import sys
-from uniface.cli.adapter import run_cli
-from uniface.api.adapter import run_server
+import os
+import argparse
+import uvicorn
+
+from uniface.core.state import state
+from uniface.core.model_manager import install_models
 
 def main():
-    parser = argparse.ArgumentParser(description="Uni-Face: Faceswap Project", add_help=False)
-    # We parse command
-    parser.add_argument("command", choices=["cli", "serve", "models"], help="Command to run")
+    parser = argparse.ArgumentParser(description="Uni-Face: Unified Face Processing Suite")
+    subparsers = parser.add_subparsers(dest="command", help="Command to run")
     
-    # Parse known args so we don't error out on CLI flags meant for the adapter
-    args, unknown = parser.parse_known_args(sys.argv[1:2])
+    # Serve / WebUI
+    serve_parser = subparsers.add_parser("serve", help="Start the Uni-Face API & WebUI server")
+    serve_parser.add_argument("--port", type=int, default=8000, help="Port to run the API server on")
+    serve_parser.add_argument("--host", type=str, default="0.0.0.0", help="Host address to bind to")
     
-    if not args.command:
-        parser.print_help()
-        sys.exit(1)
-
-    if args.command == "cli":
-        run_cli()
-    elif args.command == "serve":
-        from uniface.core.state import state
+    # Models
+    models_parser = subparsers.add_parser("models", help="Model management commands")
+    models_parser.add_argument("subcommand", choices=["install"], help="Models subcommand (e.g. install)")
+    models_parser.add_argument("--force", action="store_true", help="Force redownload all models")
+    
+    args = parser.parse_args()
+    
+    if args.command == "serve":
         state.init(parse_args=False)
-        serve_parser = argparse.ArgumentParser(prog="main.py serve")
-        serve_parser.add_argument("--port", type=int, default=state.server_port, help="Port to run the API server on")
-        serve_args = serve_parser.parse_args(sys.argv[2:])
-        run_server(port=serve_args.port)
+        print(f"Starting Uni-Face WebUI on {args.host}:{args.port}...")
+        uvicorn.run("uniface.api_server:app", host=args.host, port=args.port, reload=False)
     elif args.command == "models":
-        models_parser = argparse.ArgumentParser(prog="main.py models")
-        models_parser.add_argument("subcommand", choices=["install"], help="Models subcommand (e.g. install)")
-        models_parser.add_argument("--force", action="store_true", help="Force redownload all models")
-        models_args = models_parser.parse_args(sys.argv[2:])
-        
-        if models_args.subcommand == "install":
-            from uniface.core.model_manager import install_models
-            install_models(force=models_args.force)
+        if args.subcommand == "install":
+            install_models(force=args.force)
+    else:
+        parser.print_help()
 
 if __name__ == "__main__":
     main()

@@ -8,21 +8,23 @@ import sys
 import numpy as np
 import hashlib
 import json
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from typing import Union, Dict, Optional, Callable
 
 from uniface.core.service import process_image
 from uniface.core.config import ROOT_DIR, MODEL_PATHS
 from uniface.core.state import state
-from uniface.core.types import Face
-from typing import Union, Dict
+from uniface.core.types import Face, JobConfig
+from uniface.core.logging import get_logger
+
+logger = get_logger(__name__)
 
 # Use bundled ffmpeg/ffprobe when available; fall back to system PATH binaries.
-# MODEL_PATHS["ffmpeg"] points to models/ffmpeg.exe on Windows.
 _bundled_ffmpeg = Path(str(MODEL_PATHS.get("ffmpeg", "")))
 if _bundled_ffmpeg.exists():
     FFMPEG_BIN = str(_bundled_ffmpeg)
-    # ffprobe lives alongside ffmpeg in the same directory
     _ffprobe_candidate = _bundled_ffmpeg.parent / (_bundled_ffmpeg.stem.replace("ffmpeg", "ffprobe") + _bundled_ffmpeg.suffix)
     FFPROBE_BIN = str(_ffprobe_candidate) if _ffprobe_candidate.exists() else "ffprobe"
 else:
@@ -41,19 +43,16 @@ def has_audio(video_path: str) -> bool:
     result = subprocess.run(cmd, capture_output=True, text=True)
     return len(result.stdout.strip()) > 0
 
-
-from typing import Union, Callable
-import threading
-
 def process_video(
     source: Union[np.ndarray, Face, Dict], 
     target_video_path: str, 
     output_video_path: str,
-    progress_callback: Callable[[int, int, np.ndarray], None] = None,
-    cancel_event: threading.Event = None,
-    skip_existing: bool = True
+    progress_callback: Optional[Callable[[int, int, np.ndarray], None]] = None,
+    cancel_event: Optional[threading.Event] = None,
+    skip_existing: bool = True,
+    job_config: Optional[JobConfig] = None
 ):
-    
+    cfg = job_config or JobConfig.from_state(state)
     if not os.path.exists(target_video_path):
         raise FileNotFoundError(f"Target video not found: {target_video_path}")
         
@@ -67,10 +66,9 @@ def process_video(
     temp_audio = os.path.join(session_temp_dir, "audio.aac")
     meta_json = os.path.join(session_temp_dir, "meta.json")
     
-    # If not skipping existing (e.g. user wants to re-process with new params),
-    # clear the output frames directory so they are all re-rendered.
+    # If not skipping existing, clear output frames
     if not skip_existing and os.path.exists(temp_frames_out_dir):
-        shutil.rmtree(temp_frames_out_dir)
+        shutil.rmtree(temp_frames_out_dir, ignore_errors=True)
         
     os.makedirs(temp_frames_in_dir, exist_ok=True)
     os.makedirs(temp_frames_out_dir, exist_ok=True)
@@ -80,26 +78,25 @@ def process_video(
         
         # 1. Extract audio if exists
         if audio_exists and not os.path.exists(temp_audio):
-            print("Extracting audio from target video...")
+            logger.info("Extracting audio from target video...")
             subprocess.run([
                 FFMPEG_BIN, "-y", "-i", target_video_path,
                 "-vn", "-acodec", "copy", temp_audio
             ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             
-            # Fallback if original audio codec can't be copied directly to .aac
             if not os.path.exists(temp_audio) or os.path.getsize(temp_audio) == 0:
-                 subprocess.run([
+                subprocess.run([
                     FFMPEG_BIN, "-y", "-i", target_video_path,
                     "-vn", "-c:a", "aac", temp_audio
                 ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 
         # 2. Get/Detect source face ONCE
         if isinstance(source, np.ndarray):
-            print("Detecting source face...")
+            logger.info("Detecting source face...")
             from uniface.modules.detector import detect
             source_faces = detect(source)
             if not source_faces:
-                print("Error: No source face detected!")
+                logger.error("No source face detected in source image")
                 return
             source_faces.sort(key=lambda x: (x.bbox[2]-x.bbox[0])*(x.bbox[3]-x.bbox[1]), reverse=True)
             source_face = source_faces[0]
@@ -111,7 +108,6 @@ def process_video(
         fps = cap.get(cv2.CAP_PROP_FPS)
         cap.release()
         
-        # Smart Retry Logic: Check if frames already extracted
         need_extract = True
         total_frames = 0
         if os.path.exists(meta_json):
@@ -121,11 +117,11 @@ def process_video(
                 if meta.get("total_frames", 0) > 0:
                     need_extract = False
                     total_frames = meta["total_frames"]
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Failed to read meta.json: {e}")
                 
         if need_extract:
-            print("Extracting frames from target video...")
+            logger.info("Extracting frames from target video...")
             extract_cmd = [
                 FFMPEG_BIN, "-y", "-i", target_video_path,
                 "-q:v", "2",
@@ -141,7 +137,7 @@ def process_video(
                     json.dump({"total_frames": total_frames}, f)
         
         if total_frames == 0:
-            print("Error: No frames extracted from video.")
+            logger.error("No frames extracted from target video")
             return
             
         # 4. Prepare pending frames for processing
@@ -153,15 +149,14 @@ def process_video(
                 pending_frames.append(frame_name)
                 
         if not pending_frames:
-            print("All frames already processed! Skipping directly to merge.")
+            logger.info("All frames already processed! Skipping directly to merge.")
         else:
-            print(f"Processing {len(pending_frames)} pending frames (out of {total_frames}) using {state.execution_thread_count} threads...")
+            logger.info(f"Processing {len(pending_frames)} pending frames (out of {total_frames}) using {cfg.execution_thread_count} threads...")
             
-            # Warmup/Initialize models sequentially to avoid ONNX Runtime thread-safety issues during initialization
-            # Find an available frame for warmup
+            # Warmup/Initialize models sequentially
             warmup_img = None
             if isinstance(source, np.ndarray):
-                _ = process_image(source_face, source, verbose=False)
+                _ = process_image(source_face, source, job_config=cfg, verbose=False)
             elif pending_frames:
                 for p_frame in pending_frames:
                     p_path = os.path.join(temp_frames_in_dir, p_frame)
@@ -169,15 +164,14 @@ def process_video(
                         warmup_img = cv2.imread(p_path)
                         break
                 if warmup_img is not None:
-                    _ = process_image(source_face, warmup_img, verbose=False)
+                    _ = process_image(source_face, warmup_img, job_config=cfg, verbose=False)
             
             interrupted = False
             try:
                 from uniface.core.swarm import SwarmEngine
                 import queue
-                import threading
                 
-                engine = SwarmEngine(max_workers=state.execution_thread_count, queue_size=15)
+                engine = SwarmEngine(max_workers=cfg.execution_thread_count, queue_size=15, job_config=cfg)
                 engine.start()
 
                 # Feeder thread
@@ -207,9 +201,6 @@ def process_video(
                         try:
                             result = engine.queues["out"].get(timeout=0.5)
                         except queue.Empty:
-                            if not feeder_thread.is_alive() and engine.queues["out"].empty():
-                                # Check if any active threads are deadlocked or still processing
-                                pass
                             continue
                             
                         if result is None:
@@ -219,16 +210,10 @@ def process_video(
                             
                         frame_file, res_frame = result
                         out_path = os.path.join(temp_frames_out_dir, frame_file)
-                        in_path = os.path.join(temp_frames_in_dir, frame_file)
                         cv2.imwrite(out_path, res_frame)
-                        try:
-                            os.remove(in_path)
-                        except Exception:
-                            pass
-                            
+                        
                         pbar.update(1)
                         
-                        # Update Swarm Tuner Metrics
                         d_act, d_q = engine.stage_active["detect"], engine.queues["detect"].qsize()
                         s_act, s_q = engine.stage_active["swap"], engine.queues["swap"].qsize()
                         r_act, r_q = engine.stage_active["restore"], engine.queues["restore"].qsize()
@@ -237,10 +222,11 @@ def process_video(
                         
                         if progress_callback:
                             try:
-                                c = len(os.listdir(temp_frames_out_dir))
-                                progress_callback(c, total_frames, res_frame)
-                            except: pass
-                            
+                                current_frame_num = int(os.path.splitext(frame_file)[0])
+                                progress_callback(current_frame_num, total_frames, res_frame)
+                            except Exception as e:
+                                logger.debug(f"Video progress callback error: {e}")
+                                
                         engine.queues["out"].task_done()
                         
                 feeder_thread.join()
@@ -250,21 +236,18 @@ def process_video(
                 interrupted = True
                 if 'engine' in locals():
                     engine.stop()
-                print("\n[!] Processing interrupted by user (Ctrl+C).")
-                print("Generating partial video from completed frames...")
+                logger.warning("Processing interrupted by user. Generating partial video...")
                 
-        # 5. Merge audio and video with NVENC (fallback to libx264)
-        print(f"Merging frames into video (Encoder: {state.video_encoder})...")
+        # 5. Merge audio and video
+        logger.info(f"Merging frames into video (Encoder: {cfg.video_encoder})...")
         
-        # Calculate percentage for suffix if interrupted
         final_output_path = output_video_path
         if 'interrupted' in locals() and interrupted:
             processed_count = len([f for f in os.listdir(temp_frames_out_dir) if f.endswith('.jpg')])
             percent = int((processed_count / total_frames) * 100) if total_frames > 0 else 0
-            
             base, ext = os.path.splitext(output_video_path)
             final_output_path = f"{base}_{percent}%{ext}"
-            print(f"Saving partial output to: {final_output_path}")
+            logger.info(f"Saving partial output to: {final_output_path}")
 
         merge_cmd = [
             FFMPEG_BIN, "-y", 
@@ -275,7 +258,7 @@ def process_video(
         if audio_exists and os.path.exists(temp_audio) and os.path.getsize(temp_audio) > 0:
             merge_cmd.extend(["-i", temp_audio])
             
-        merge_cmd.extend(["-c:v", state.video_encoder, "-pix_fmt", "yuv420p"])
+        merge_cmd.extend(["-c:v", cfg.video_encoder, "-pix_fmt", "yuv420p"])
         if audio_exists:
             merge_cmd.extend(["-c:a", "aac", "-shortest"])
             
@@ -283,25 +266,20 @@ def process_video(
         
         result = subprocess.run(merge_cmd, capture_output=True, text=True)
         
-        if result.returncode != 0 and state.video_encoder != "libx264":
-            print(f"Warning: Encoder '{state.video_encoder}' failed. Falling back to libx264...")
+        if result.returncode != 0 and cfg.video_encoder != "libx264":
+            logger.warning(f"Encoder '{cfg.video_encoder}' failed. Falling back to libx264...")
             fallback_cmd = merge_cmd.copy()
             idx = fallback_cmd.index("-c:v") + 1
             fallback_cmd[idx] = "libx264"
             result = subprocess.run(fallback_cmd, capture_output=True, text=True)
             
         if result.returncode == 0:
-            print("Video processing complete!")
-            if 'interrupted' in locals() and interrupted:
-                print("Temp files preserved for future resume. You can re-run the same command to continue.")
-            else:
-                print("Cleaning up temp files...")
+            logger.info("Video processing complete!")
+            if not ('interrupted' in locals() and interrupted):
                 shutil.rmtree(session_temp_dir, ignore_errors=True)
         else:
-            print("Error: Merging video failed. Temp files are preserved for retry.")
-            print(result.stderr)
+            logger.error(f"Merging video failed: {result.stderr}")
             
     except Exception as e:
-        print(f"Exception during video processing: {e}")
-        # DO NOT cleanup temp_dir here so user can resume later!
+        logger.error(f"Exception during video processing: {e}", exc_info=True)
         raise

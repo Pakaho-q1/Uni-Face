@@ -1,7 +1,9 @@
 import cv2
 import numpy as np
+from typing import Optional, List
 
 from uniface.core.types import Face
+from uniface.core.state import state
 from uniface.modules.utils import face_math
 from uniface.modules.parser import get_combined_mask
 
@@ -11,14 +13,14 @@ class FaceCompositor:
     Matches the skin tone of the swapped face to the original face, and applies feathered masking.
     """
     def __init__(self):
-        # GFPGAN/GPEN uses ffhq_512, swapper usually uses arcface_128 or ffhq_512
-        # We will work dynamically based on the input frame's crop size
         pass
 
     def equalize_color(self, source_crop: np.ndarray, target_crop: np.ndarray, size: tuple) -> np.ndarray:
         """
         Calculates the color difference at a specific low resolution (size) and adds it back to the target.
         """
+        if source_crop is None or target_crop is None:
+            return target_crop
         source_resized = cv2.resize(source_crop, size, interpolation=cv2.INTER_AREA).astype(np.float32)
         target_resized = cv2.resize(target_crop, size, interpolation=cv2.INTER_AREA).astype(np.float32)
         
@@ -32,6 +34,8 @@ class FaceCompositor:
         """
         Compares the HSV histograms of source and target to determine how much blending is needed.
         """
+        if source_crop is None or target_crop is None:
+            return 0.0
         hist_source = cv2.calcHist([cv2.cvtColor(source_crop, cv2.COLOR_BGR2HSV)], [0, 1], None, [50, 60], [0, 180, 0, 256])
         hist_target = cv2.calcHist([cv2.cvtColor(target_crop, cv2.COLOR_BGR2HSV)], [0, 1], None, [50, 60], [0, 180, 0, 256])
         
@@ -44,8 +48,9 @@ class FaceCompositor:
         """
         Matches the color of target_crop to source_crop using multi-scale equalization.
         """
+        if source_crop is None or target_crop is None:
+            return target_crop
         h, w = target_crop.shape[:2]
-        # Use multiple scales to match overall lighting and local color tone
         sizes = np.linspace(16, h, 3, endpoint=False).astype(int)
         
         matched_crop = target_crop.copy()
@@ -59,6 +64,8 @@ class FaceCompositor:
         """
         Conditionally matches color based on histogram differences to prevent over-correction.
         """
+        if source_crop is None or target_crop is None:
+            return target_crop
         hist_factor = self.calculate_histogram_difference(source_crop, target_crop)
         matched = self.match_color(source_crop, target_crop)
         
@@ -66,20 +73,25 @@ class FaceCompositor:
         final_matched = cv2.addWeighted(target_crop, 1 - hist_factor, matched, hist_factor, 0)
         return final_matched
 
-    def composite(self, target_face: Face, swapped_frame: np.ndarray, original_frame: np.ndarray) -> np.ndarray:
+    def composite(
+        self,
+        target_face: Face,
+        swapped_frame: np.ndarray,
+        original_frame: np.ndarray,
+        mask_types: Optional[List[str]] = None
+    ) -> np.ndarray:
         """
         Composites the swapped face seamlessly back into the original frame.
-        
-        Args:
-            target_face: The original target Face object
-            swapped_frame: The full frame containing the swapped (and optionally restored) face
-            original_frame: The original untouched full frame
-            
-        Returns:
-            The final composited frame.
         """
-        # 1. Extract the swapped crop (which may have GFPGAN enhancement) and its affine matrix
-        # Since GFPGAN/Restorer uses 512x512 ffhq_512, we will use that as standard for high-res composite
+        if swapped_frame is None or original_frame is None:
+            return swapped_frame
+            
+        if target_face is None or not hasattr(target_face, "landmark_5") or target_face.landmark_5 is None:
+            return swapped_frame
+            
+        if mask_types is None:
+            mask_types = getattr(state, "mask_types", ["box"])
+            
         template = 'ffhq_512'
         crop_size = (512, 512)
         
@@ -90,7 +102,6 @@ class FaceCompositor:
             crop_size
         )
         
-        # 2. Extract the original target crop (to serve as the color reference)
         original_crop, _ = face_math.warp_face_by_face_landmark_5(
             original_frame, 
             target_face.landmark_5, 
@@ -98,30 +109,28 @@ class FaceCompositor:
             crop_size
         )
         
-        # 3. Match color of swapped crop to original crop
-        # Note: FaceFusion matches target to source. We want to match our swapped crop (which is our new 'source') 
-        # to the original crop (which is our 'target' environment lighting)
-        # So we want swapped_crop to look like original_crop.
-        # Thus, conditional_match_color(original_crop, swapped_crop)
+        if swapped_crop is None or original_crop is None or affine_matrix is None:
+            return swapped_frame
+            
         matched_crop = self.conditional_match_color(original_crop, swapped_crop)
         
-        # 4. Generate the mask for the matched crop
-        # The mask determines which parts of the face we keep (excluding hair, background, occlusions)
-        crop_mask = get_combined_mask(matched_crop)
+        crop_mask = get_combined_mask(original_frame, matched_crop, mask_types, target_face, affine_matrix)
         
-        # Apply extra Gaussian blur to the mask for softer feathering at the edges
-        blur_amount = int(crop_size[0] * 0.1) # 10% of crop size
+        blur_amount = int(crop_size[0] * 0.1)
         if blur_amount % 2 == 0:
             blur_amount += 1
         crop_mask = cv2.GaussianBlur(crop_mask, (blur_amount, blur_amount), 0)
         
-        # 5. Paste the matched and feathered crop back onto the original frame!
         final_frame = face_math.paste_back(original_frame, matched_crop, crop_mask, affine_matrix)
-        
         return final_frame
 
 # Export default instance
 compositor_app = FaceCompositor()
 
-def composite(target_face: Face, swapped_frame: np.ndarray, original_frame: np.ndarray) -> np.ndarray:
-    return compositor_app.composite(target_face, swapped_frame, original_frame)
+def composite(
+    target_face: Face,
+    swapped_frame: np.ndarray,
+    original_frame: np.ndarray,
+    mask_types: Optional[List[str]] = None
+) -> np.ndarray:
+    return compositor_app.composite(target_face, swapped_frame, original_frame, mask_types=mask_types)

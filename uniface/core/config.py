@@ -15,6 +15,8 @@ MODEL_PATHS = {
     "2dfan4": MODELS_DIR / "2dfan4.onnx",
     "arcface": INSIGHTFACE_MODELS_DIR / "w600k_r50.onnx",
     "xseg_1": MODELS_DIR / "xseg_1.onnx",
+    "xseg_2": MODELS_DIR / "xseg_2.onnx",
+    "xseg_3": MODELS_DIR / "xseg_3.onnx",
     "bisenet_resnet_34": MODELS_DIR / "bisenet_resnet_34.onnx",
     "inswapper_128": MODELS_DIR / "inswapper_128.onnx",
     "inswapper_128_fp16": MODELS_DIR / "inswapper_128_fp16.onnx",

@@ -1,0 +1,30 @@
+# AssetBulkUploadCheckItem
+
+
+## Properties
+
+Name | Type | Description | Notes
+------------ | ------------- | ------------- | -------------
+**checksum** | **str** | Base64 or hex encoded SHA1 hash | 
+**id** | **str** | Client-side identifier echoed in the response to match results to inputs (e.g. filename) | 
+
+## Example
+
+```python
+from immich_sdk.models.asset_bulk_upload_check_item import AssetBulkUploadCheckItem
+
+# TODO update the JSON string below
+json = "{}"
+# create an instance of AssetBulkUploadCheckItem from a JSON string
+asset_bulk_upload_check_item_instance = AssetBulkUploadCheckItem.from_json(json)
+# print the JSON string representation of the object
+print(AssetBulkUploadCheckItem.to_json())
+
+# convert the object into a dict
+asset_bulk_upload_check_item_dict = asset_bulk_upload_check_item_instance.to_dict()
+# create an instance of AssetBulkUploadCheckItem from a dict
+asset_bulk_upload_check_item_from_dict = AssetBulkUploadCheckItem.from_dict(asset_bulk_upload_check_item_dict)
+```
+[[Back to Model list]](../README.md#documentation-for-models) [[Back to API list]](../README.md#documentation-for-api-endpoints) [[Back to README]](../README.md)
+
+

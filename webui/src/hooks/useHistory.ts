@@ -1,14 +1,13 @@
+/**
+ * Custom hook for output history library management (pagination, bulk download, bulk delete).
+ */
+
 import { useState, useCallback } from 'react';
+import { toast } from 'sonner';
+import { api } from '@/services/api';
+import type { HistoryItem } from '@/types';
 
-export type HistoryItem = {
-  filename: string;
-  url: string;
-  type: string;
-  created_at: number;
-  size?: number;
-}
-
-export function useHistory(apiBase: string, platform: string) {
+export function useHistory() {
   const [history, setHistory] = useState<HistoryItem[]>([]);
   const [totalHistory, setTotalHistory] = useState<number>(0);
   const [historyPage, setHistoryPage] = useState<number>(0);
@@ -19,33 +18,26 @@ export function useHistory(apiBase: string, platform: string) {
     try {
       const limit = 30;
       const skip = page * limit;
-      const res = await fetch(`${apiBase}/api/v1/history?skip=${skip}&limit=${limit}`, { 
-        headers: { 'X-Client-Platform': platform } 
-      });
-      const data = await res.json();
-      const formattedHistory = (data.history || []).map((item: any) => ({
-        ...item,
-        url: item.url.startsWith('http') ? item.url : `${apiBase}${item.url}`
-      }));
+      const data = await api.getHistory(skip, limit);
       
       setTotalHistory(data.total || 0);
-      setHasMoreHistory(formattedHistory.length === limit);
+      setHasMoreHistory((data.history || []).length === limit);
       
       if (append) {
         setHistory(prev => {
-          // Prevent duplicates by checking filenames
           const existing = new Set(prev.map(p => p.filename));
-          const newItems = formattedHistory.filter((h: HistoryItem) => !existing.has(h.filename));
+          const newItems = (data.history || []).filter((h: HistoryItem) => !existing.has(h.filename));
           return [...prev, ...newItems];
         });
       } else {
-        setHistory(formattedHistory);
+        setHistory(data.history || []);
       }
       setHistoryPage(page);
     } catch (e) {
-      console.error("Failed to fetch history");
+      console.error("Failed to fetch history", e);
+      toast.error("Failed to load output history");
     }
-  }, [apiBase, platform]);
+  }, []);
 
   const bulkDelete = async () => {
     const files = Array.from(selectedItems);
@@ -53,34 +45,29 @@ export function useHistory(apiBase: string, platform: string) {
     
     const deleteAll = files.length === totalHistory;
     
-    let confirmMsg = `คุณต้องการลบผลลัพธ์จำนวน ${files.length} รายการ ใช่หรือไม่?`;
+    let confirmMsg = `Are you sure you want to delete ${files.length} selected item(s)?`;
     if (deleteAll && totalHistory > history.length) {
-      confirmMsg = `คุณเลือกรูปภาพทั้งหมดที่มีในระบบ (${totalHistory} รูป)\nคุณต้องการลบทั้งหมดเลย ใช่หรือไม่?\n\n(หากต้องการลบเฉพาะที่แสดง ให้กดยกเลิกแล้วเลือกทีละรูป)`;
+      confirmMsg = `You selected all ${totalHistory} items in the database. Are you sure you want to delete ALL of them?`;
     }
     
     if (!window.confirm(confirmMsg)) return;
     
-    await fetch(`${apiBase}/api/v1/history`, {
-      method: 'DELETE',
-      headers: { 'Content-Type': 'application/json', 'X-Client-Platform': platform },
-      body: JSON.stringify({ filenames: files, delete_all: deleteAll })
-    });
-    setSelectedItems(new Set());
-    fetchHistory(0, false);
+    try {
+      await api.deleteHistory(files, deleteAll);
+      toast.success(`Deleted ${files.length} item(s)`);
+      setSelectedItems(new Set());
+      fetchHistory(0, false);
+    } catch (e: any) {
+      toast.error("Failed to delete items", { description: e.message });
+    }
   };
 
-  const bulkDownload = async () => {
+  const bulkDownload = async (): Promise<boolean> => {
     const files = Array.from(selectedItems);
     if (!files.length) return false;
     
     try {
-      const res = await fetch(`${apiBase}/api/v1/history/download`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'X-Client-Platform': platform },
-        body: JSON.stringify({ filenames: files })
-      });
-      
-      const blob = await res.blob();
+      const blob = await api.downloadHistoryZip(files);
       const url = window.URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
@@ -91,9 +78,11 @@ export function useHistory(apiBase: string, platform: string) {
       window.URL.revokeObjectURL(url);
       
       setSelectedItems(new Set());
+      toast.success("Download started");
       return true;
-    } catch (e) {
+    } catch (e: any) {
       console.error("Download failed", e);
+      toast.error("Download failed", { description: e.message });
       return false;
     }
   };
@@ -108,18 +97,12 @@ export function useHistory(apiBase: string, platform: string) {
   const toggleSelectAll = async (checked: boolean) => {
     if (checked) {
       if (history.length < totalHistory) {
-        // Fetch all items to select them
         try {
-          const res = await fetch(`${apiBase}/api/v1/history?skip=0&limit=999999`, { 
-            headers: { 'X-Client-Platform': platform } 
-          });
-          const data = await res.json();
-          setSelectedItems(new Set((data.history || []).map((h: any) => h.filename)));
-          
-          // Optionally update the viewed history to show all, or leave it paginated.
-          // We will leave it paginated for performance, but all items will be checked.
+          const data = await api.getHistory(0, 999999);
+          setSelectedItems(new Set((data.history || []).map((h: HistoryItem) => h.filename)));
         } catch (e) {
-          console.error("Failed to fetch all history for selection");
+          console.error("Failed to fetch all history for selection", e);
+          toast.error("Failed to select all items");
         }
       } else {
         setSelectedItems(new Set(history.map(h => h.filename)));

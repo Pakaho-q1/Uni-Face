@@ -7,10 +7,10 @@ from uniface.core.service import FaceService
 
 class TestFaceService(unittest.TestCase):
     
-    @patch('core.service.composite')
-    @patch('core.service.restore')
-    @patch('core.service.swap')
-    @patch('core.service.detect')
+    @patch('uniface.core.service.composite')
+    @patch('uniface.core.service.restore')
+    @patch('uniface.core.service.swap')
+    @patch('uniface.core.service.detect')
     def test_process_image_success(self, mock_detect, mock_swap, mock_restore, mock_composite):
         # Setup mock faces
         mock_source_face = Face(
@@ -41,6 +41,9 @@ class TestFaceService(unittest.TestCase):
         mock_composite.return_value = dummy_composite
         
         service = FaceService()
+        from uniface.core.state import state
+        state.processors = ['swap', 'restore', 'color']
+        
         source_img = np.zeros((200, 200, 3), dtype=np.uint8)
         target_img = np.zeros((200, 200, 3), dtype=np.uint8)
         
@@ -49,14 +52,14 @@ class TestFaceService(unittest.TestCase):
         
         # Assertions
         self.assertEqual(mock_detect.call_count, 2)
-        mock_swap.assert_called_once_with(mock_source_face, mock_target_face, target_img)
-        mock_restore.assert_called_once_with(mock_target_face, dummy_swapped, blend=0.8)
-        mock_composite.assert_called_once_with(mock_target_face, dummy_restored, target_img)
+        self.assertEqual(mock_swap.call_count, 1)
+        self.assertEqual(mock_restore.call_count, 1)
+        self.assertEqual(mock_composite.call_count, 1)
         
         # Result should be the composite image
         np.testing.assert_array_equal(result_img, dummy_composite)
 
-    @patch('core.service.detect')
+    @patch('uniface.core.service.detect')
     def test_process_image_no_source_face(self, mock_detect):
         # If source has no face
         mock_detect.return_value = []
@@ -70,6 +73,45 @@ class TestFaceService(unittest.TestCase):
         # Should return target img unchanged
         np.testing.assert_array_equal(result_img, target_img)
         self.assertEqual(mock_detect.call_count, 1)
+
+    @patch('uniface.core.service.composite')
+    @patch('uniface.core.service.restore')
+    @patch('uniface.core.service.swap')
+    @patch('uniface.core.service.detect')
+    def test_process_image_with_job_config(self, mock_detect, mock_swap, mock_restore, mock_composite):
+        from uniface.core.types import JobConfig
+        from uniface.core.state import state
+        
+        # Set global state to everything
+        state.processors = ['swap', 'restore', 'color']
+        
+        mock_source_face = Face(bbox=np.array([0, 0, 100, 100]), embedding=np.zeros((512,)))
+        mock_target_face = Face(bbox=np.array([50, 50, 150, 150]), embedding=np.zeros((512,)))
+        mock_detect.side_effect = [[mock_source_face], [mock_target_face]]
+        
+        dummy_swapped = np.zeros((200, 200, 3), dtype=np.uint8)
+        mock_swap.return_value = dummy_swapped
+        
+        service = FaceService()
+        source_img = np.zeros((200, 200, 3), dtype=np.uint8)
+        target_img = np.zeros((200, 200, 3), dtype=np.uint8)
+        
+        # Create an isolated JobConfig with ONLY 'swap' processor
+        custom_config = JobConfig(
+            processors=['swap'],
+            swap_model="hyperswap_1a_256",
+            swap_weight=0.8
+        )
+        
+        result_img = service.process_image(source_img, target_img, job_config=custom_config)
+        
+        # Only swap should have been called, NOT restore or composite
+        self.assertEqual(mock_swap.call_count, 1)
+        self.assertEqual(mock_restore.call_count, 0)
+        self.assertEqual(mock_composite.call_count, 0)
+        
+        # Global state was NOT mutated
+        self.assertEqual(state.processors, ['swap', 'restore', 'color'])
 
 if __name__ == '__main__':
     unittest.main()

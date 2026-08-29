@@ -32,21 +32,32 @@ class TestMaskParser(unittest.TestCase):
         
     @patch('onnxruntime.InferenceSession')
     def test_create_region_mask(self, mock_ort_session):
-        mock_xseg_session = MagicMock()
         mock_bisenet_session = MagicMock()
-        mock_ort_session.side_effect = [mock_xseg_session, mock_bisenet_session]
+        mock_input = MagicMock()
+        mock_input.name = "input"
+        mock_bisenet_session.get_inputs.return_value = [mock_input]
+        mock_ort_session.return_value = mock_bisenet_session
         
-        # Mock bisenet output (19, 512, 512)
+        # Mock bisenet output (1, 19, 512, 512)
         dummy_bisenet_out = np.zeros((19, 512, 512), dtype=np.float32)
-        # Class 1 is 'skin'. Let's set some pixels to class 1
         dummy_bisenet_out[1, 100:200, 100:200] = 10.0 # High logit for skin
         
-        mock_bisenet_session.run.return_value = [[dummy_bisenet_out]]
+        mock_bisenet_session.run.return_value = [dummy_bisenet_out]
         
         parser = MaskParser()
-        crop_vision_frame = np.zeros((128, 128, 3), dtype=np.uint8)
+        full_frame = np.zeros((512, 512, 3), dtype=np.uint8)
+        crop_shape = (128, 128, 3)
+        affine_matrix = np.eye(2, 3, dtype=np.float32)
         
-        mask = parser.create_region_mask(crop_vision_frame, regions=['skin'])
+        from uniface.core.types import Face
+        target_face = Face(
+            bbox=np.array([100, 100, 400, 400]),
+            landmark_5=np.array([[192, 240], [319, 240], [257, 314], [201, 371], [313, 371]], dtype=np.float32),
+            landmark_106=np.zeros((68, 2), dtype=np.float32),
+            embedding=np.zeros((512,), dtype=np.float32)
+        )
+        
+        mask = parser.create_region_mask(full_frame, target_face, affine_matrix, crop_shape, regions=['skin'])
         
         self.assertEqual(mask.shape, (128, 128))
         mock_bisenet_session.run.assert_called_once()

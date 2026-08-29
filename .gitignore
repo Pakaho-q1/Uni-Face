@@ -1,12 +1,17 @@
+# ==========================================
 # Byte-compiled / optimized / DLL files
+# ==========================================
 __pycache__/
 *.py[cod]
 *$py.class
-
-# C extensions
 *.so
+*.pyd
+*.dll
+*.dylib
 
+# ==========================================
 # Distribution / packaging
+# ==========================================
 .Python
 build/
 develop-eggs/
@@ -26,39 +31,104 @@ share/python-wheels/
 *.egg
 MANIFEST
 
-# Environments
+# ==========================================
+# Virtual Environments & Configs
+# ==========================================
 .env
+.env.local
+.env.*.local
 .venv
-env/
 venv/
 ENV/
+env/
 env.bak/
 venv.bak/
 
-# Project specifics
-models/
+# ==========================================
+# Uni-Face Workspaces & User Data
+# ==========================================
 workspace/
-image/
+!workspace/.gitkeep
+
+# Models directory: ignore large weights and binaries, keep hash integrity files
+models/**/*.onnx
+models/*.onnx
+models/**/*.dfm
+models/*.dfm
+models/**/*.bin
+models/**/*.pt
+models/**/*.pth
+models/**/*.safetensors
+models/*.exe
+models/**/*.exe
+models/ffmpeg.exe
+!models/*.hash
+!models/**/*.hash
+!models/.gitkeep
+
+# Temporary test directories and staging
+immich_staging_*
+immich_target_test/
 test_dir/
-uniface-redesign.html
+image/
+*.png
+!webui/public/*.png
+!webui/src/assets/*.png
+
+# Database & SQLite files
+*.sqlite
+*.sqlite3
+*.db
+!tests/fixtures/*.db
+
+# Log files
 *.log
+logs/
 
-# Frontend (Node.js)
+# ==========================================
+# Frontend (WebUI / Node.js)
+# ==========================================
 webui/node_modules/
-webui/.npm
+# Allow pre-built webui/dist to be committed for standalone runtime without node
+!webui/dist/
+webui/dist-ssr/
+webui/.npm/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
 
-# IDE / OS
+# ==========================================
+# IDE / Operating System Files
+# ==========================================
 .vscode/
+!.vscode/extensions.json
 .idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
 .DS_Store
 Thumbs.db
+desktop.ini
 
-# Cache
+# ==========================================
+# Caches & Test artifacts
+# ==========================================
 .cache/
 .caches/
 .pytest_cache/
+.ruff_cache/
+.mypy_cache/
 .temp/
 
-# Output archives
+# ==========================================
+# Output Archives
+# ==========================================
 *.zip
+*.tar
 *.tar.gz
+*.7z
+*.rar

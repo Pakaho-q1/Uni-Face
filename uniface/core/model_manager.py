@@ -3,21 +3,26 @@ import requests
 import hashlib
 from pathlib import Path
 from tqdm import tqdm
-from uniface.core.config import MODEL_PATHS, MODELS_DIR
+from typing import Optional, Union, Dict
 
+from uniface.core.config import MODEL_PATHS, MODELS_DIR
+from uniface.core.logging import get_logger
+
+logger = get_logger(__name__)
 HF_REPO_URL = "https://huggingface.co/Pakaho-q1/Uni-Face/resolve/main"
 
-def calculate_hash(file_path):
+def calculate_hash(file_path: Union[str, Path]) -> str:
     hasher = hashlib.sha256()
     with open(file_path, 'rb') as f:
         for chunk in iter(lambda: f.read(4096), b""):
             hasher.update(chunk)
     return hasher.hexdigest()
 
-def download_file(url, dest_path, desc):
+def download_file(url: str, dest_path: Union[str, Path], desc: str) -> bool:
     try:
         response = requests.get(url, stream=True, timeout=15)
         if response.status_code == 404:
+            logger.warning(f"File not found on remote (404): {url}")
             return False
         response.raise_for_status()
         
@@ -37,24 +42,19 @@ def download_file(url, dest_path, desc):
                 bar.update(size)
         return True
     except Exception as e:
-        print(f"\nError downloading {desc}: {e}")
+        logger.error(f"Error downloading {desc}: {e}")
         return False
 
-def install_models(force=False):
-    print(f"Checking {len(MODEL_PATHS)} models from Hugging Face...")
+def install_models(force: bool = False) -> Dict[str, int]:
+    logger.info(f"Checking {len(MODEL_PATHS)} models from Hugging Face...")
     
     success_count = 0
     fail_count = 0
     
     for model_name, local_path in MODEL_PATHS.items():
-        if model_name == "ffmpeg":
-            continue # Skip ffmpeg since it's an exe and usually bundled separately, but we uploaded it so let's check it anyway?
-            # Actually, we can download ffmpeg.exe too since we uploaded it!
-            
         try:
             rel_path = local_path.relative_to(MODELS_DIR)
         except ValueError:
-            # Fallback if path manipulation fails
             rel_path = Path(local_path.name)
             
         url_path = str(rel_path).replace("\\", "/")
@@ -73,31 +73,32 @@ def install_models(force=False):
                 os.makedirs(os.path.dirname(hash_path), exist_ok=True)
                 with open(hash_path, 'w') as f:
                     f.write(expected_hash)
-        except:
-            pass # Use local hash if HF is unreachable or hash missing
+        except Exception as e:
+            logger.debug(f"Could not fetch remote hash for {model_name}: {e}")
             
         # 2. Check local file
         if not need_download and os.path.exists(local_path):
             if expected_hash:
                 local_hash = calculate_hash(local_path)
                 if local_hash != expected_hash:
-                    print(f"[!] Hash mismatch for {model_name}. Marking for download...")
+                    logger.warning(f"Hash mismatch for {model_name}. Marking for download...")
                     need_download = True
         else:
             need_download = True
             
         # 3. Download if needed
         if need_download:
-            print(f"Downloading {model_name}...")
+            logger.info(f"Downloading {model_name}...")
             if download_file(model_url, local_path, desc=model_name):
-                print(f"[✓] {model_name} downloaded successfully.")
+                logger.info(f"[✓] {model_name} downloaded successfully.")
                 success_count += 1
             else:
-                print(f"[x] Failed to download {model_name}.")
+                logger.error(f"[x] Failed to download {model_name}.")
                 fail_count += 1
         else:
-            print(f"[✓] {model_name} is up-to-date.")
+            logger.info(f"[✓] {model_name} is up-to-date.")
             success_count += 1
             
-    print("-" * 40)
-    print(f"Installation Complete. Success: {success_count} | Failed: {fail_count}")
+    logger.info("-" * 40)
+    logger.info(f"Installation Complete. Success: {success_count} | Failed: {fail_count}")
+    return {"success": success_count, "failed": fail_count}

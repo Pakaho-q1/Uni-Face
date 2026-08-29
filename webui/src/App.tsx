@@ -1,18 +1,19 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
+import { toast, Toaster } from 'sonner';
 import { TopNav } from '@/components/layout/TopNav';
 import { HistorySidebar } from '@/components/layout/HistorySidebar';
-import { SettingsPanel, useSettings } from '@/components/layout/SettingsPanel';
+import { SettingsPanel } from '@/components/layout/SettingsPanel';
 import { BottomControlBar } from '@/components/layout/BottomControlBar';
 import { PreviewStage } from '@/components/stage/PreviewStage';
 import { ModelBuilderDialog } from '@/components/stage/ModelBuilderDialog';
 import { TargetSetManager } from '@/components/stage/TargetSetManager';
+import { ImmichTargetManager } from '@/components/stage/ImmichTargetManager';
 import { ReferenceFaceSelector } from '@/components/stage/ReferenceFaceSelector';
-import { Toaster } from 'sonner';
-import { useHistory, type HistoryItem } from '@/hooks/useHistory';
+import { useSettings } from '@/hooks/useSettings';
+import { useHistory } from '@/hooks/useHistory';
 import { useJobManager } from '@/hooks/useJobManager';
-
-const API_BASE = import.meta.env.DEV ? `http://${window.location.hostname}:8000` : window.location.origin;
-const PLATFORM = "webui_react";
+import { api } from '@/services/api';
+import type { HistoryItem, ExtractedFace, TargetFile } from '@/types';
 
 export default function App() {
   const [leftOpen, setLeftOpen] = useState(false);
@@ -27,30 +28,30 @@ export default function App() {
   const [builderOpen, setBuilderOpen] = useState(false);
   
   const [targetFiles, setTargetFiles] = useState<File[]>([]);
-  
   const [lightboxItem, setLightboxItem] = useState<HistoryItem | null>(null);
 
   const [targetType, setTargetType] = useState<"upload" | "set">("upload");
-  const [targetSetFiles, setTargetSetFiles] = useState<{filename: string, file_id: string, url: string}[]>([]);
+  const [targetSetFiles, setTargetSetFiles] = useState<TargetFile[]>([]);
   const [targetManagerOpen, setTargetManagerOpen] = useState(false);
+  const [immichManagerOpen, setImmichManagerOpen] = useState(false);
 
   const [referenceSelectorOpen, setReferenceSelectorOpen] = useState(false);
-  const [referenceFaces, setReferenceFaces] = useState<any[]>([]); // ExtractedFace[]
+  const [referenceFaces, setReferenceFaces] = useState<ExtractedFace[]>([]);
   const [referenceThreshold, setReferenceThreshold] = useState<number>(0.6);
 
+  const sourcePreviewUrlRef = useRef<string>('');
+  const targetPreviewUrlRef = useRef<string>('');
+
   const settings = useSettings();
-  
-  const historyManager = useHistory(API_BASE, PLATFORM);
-  
-  const jobManager = useJobManager(API_BASE, PLATFORM, () => {
+  const historyManager = useHistory();
+  const jobManager = useJobManager(() => {
     historyManager.fetchHistory(0, false);
   });
 
   const fetchModels = async () => {
     try {
-      const res = await fetch(`${API_BASE}/api/v1/face-models`, { headers: { 'X-Client-Platform': PLATFORM } });
-      const data = await res.json();
-      setAvailableModels(data.models.map((m: any) => m.name));
+      const data = await api.getFaceModels();
+      setAvailableModels(data.models.map(m => m.name));
     } catch (e) {
       console.error("Failed to fetch models", e);
     }
@@ -69,21 +70,31 @@ export default function App() {
     if (jobManager.jobState.currentJobId && jobManager.jobState.running) {
       jobManager.updatePreviewSettings(previewVisible, parseInt(settings.previewRes, 10));
     }
-  }, [previewVisible, settings.previewRes, jobManager.jobState.currentJobId, jobManager.jobState.running]);
+  }, [previewVisible, settings.previewRes, jobManager]);
 
   const handleSourceChange = (file: File) => {
+    if (sourcePreviewUrlRef.current) {
+      URL.revokeObjectURL(sourcePreviewUrlRef.current);
+    }
+    const newUrl = URL.createObjectURL(file);
+    sourcePreviewUrlRef.current = newUrl;
     setSourceFile(file);
-    setSourcePreview(URL.createObjectURL(file));
+    setSourcePreview(newUrl);
   };
 
   const handleTargetChange = (files: File[]) => {
     setTargetFiles(files);
     const file = files[0];
-    if (file.type.startsWith('video/') || file.type.startsWith('image/')) {
+    if (file && (file.type.startsWith('video/') || file.type.startsWith('image/'))) {
+      if (targetPreviewUrlRef.current) {
+        URL.revokeObjectURL(targetPreviewUrlRef.current);
+      }
+      const newUrl = URL.createObjectURL(file);
+      targetPreviewUrlRef.current = newUrl;
       jobManager.setJobState(prev => ({
         ...prev,
         targetType: file.type.startsWith('video/') ? 'video' : 'image',
-        targetPreview: URL.createObjectURL(file)
+        targetPreview: newUrl
       }));
     }
   };
@@ -96,11 +107,11 @@ export default function App() {
       const hasTarget = (targetType === "upload" && targetFiles.length > 0) || (targetType === "set" && targetSetFiles.length > 0);
       
       if (!hasSource || !hasTarget) {
-        alert("Please select a Source and Target files.");
+        toast.error("Missing Input", { description: "Please select both Source and Target media before starting." });
         return;
       }
       
-      let processors = ["swap"];
+      const processors = ["swap"];
       if (settings.faceRestore) processors.push("restore");
       if (settings.colorMatch) processors.push("color");
 
@@ -116,12 +127,21 @@ export default function App() {
         restore_blend: settings.restoreBlend[0],
         mask_types: settings.maskTypes,
         mask_regions: settings.maskRegions,
+        occlusion_model: settings.occlusionModel,
         similarity: settings.similarity,
         providers: [settings.executionProvider],
         execution_thread_count: settings.executionThreadCount[0],
         skip_existing: settings.skipExisting,
         reference_face_ids: referenceFaces.map(f => f.id),
-        reference_threshold: referenceThreshold
+        reference_threshold: referenceThreshold,
+        
+        immich_url: settings.immichUrl,
+        immich_api_key: settings.immichApiKey,
+        immich_auto_save: settings.immichAutoSave,
+        immich_new_album: settings.immichNewAlbum,
+        immich_album: settings.immichAlbum,
+        immich_tags: settings.immichTags,
+        immich_delete_local: settings.immichDeleteLocal
       };
 
       const src = sourceType === "image" ? sourceFile! : sourceModel;
@@ -167,6 +187,7 @@ export default function App() {
           onBulkDownload={historyManager.bulkDownload}
           lightboxItem={lightboxItem}
           setLightboxItem={setLightboxItem}
+          settings={settings}
         />
 
         <PreviewStage 
@@ -189,6 +210,14 @@ export default function App() {
           availableModels={availableModels}
           onOpenModelBuilder={() => setBuilderOpen(true)}
           onOpenTargetManager={() => setTargetManagerOpen(true)}
+          onOpenImmichManager={() => {
+            if (!settings.immichUrl || !settings.immichApiKey) {
+              toast.error("Immich Not Connected", { description: "Please enter your Immich URL and API Key in Settings first." });
+              setRightOpen(true);
+              return;
+            }
+            setImmichManagerOpen(true);
+          }}
           onOpenReferenceSelector={() => setReferenceSelectorOpen(true)}
         />
 
@@ -212,14 +241,11 @@ export default function App() {
         <ModelBuilderDialog
           open={builderOpen}
           onClose={() => setBuilderOpen(false)}
-          apiBase={API_BASE}
-          platform={PLATFORM}
           onModelBuilt={fetchModels}
         />
         
         <TargetSetManager
           open={targetManagerOpen}
-          platform={PLATFORM}
           chunkSizeMB={settings.hashChunkSize[0]}
           onOpenChange={setTargetManagerOpen}
           onSelectSet={(files) => {
@@ -228,11 +254,21 @@ export default function App() {
           }}
         />
 
+        <ImmichTargetManager
+          open={immichManagerOpen}
+          onOpenChange={setImmichManagerOpen}
+          immichUrl={settings.immichUrl}
+          immichApiKey={settings.immichApiKey}
+          immichLocalPath={settings.immichLocalPath}
+          onSelectTargets={(files) => {
+            setTargetSetFiles(files);
+            setTargetType("set");
+          }}
+        />
+
         <ReferenceFaceSelector
           open={referenceSelectorOpen}
           onOpenChange={setReferenceSelectorOpen}
-          platform={PLATFORM}
-          apiBase={API_BASE}
           targetType={targetType}
           sampleCount={settings.scanSampleCount[0]}
           targetFiles={targetFiles}

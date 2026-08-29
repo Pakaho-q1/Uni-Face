@@ -4,17 +4,12 @@ import { Button } from '@/components/ui/button';
 import { Slider } from '@/components/ui/slider';
 import { Loader2, User, CheckCircle2 } from 'lucide-react';
 import { toast } from 'sonner';
-
-export interface ExtractedFace {
-  id: string;
-  url: string; // base64 or relative URL
-}
+import { api } from '@/services/api';
+import type { ExtractedFace } from '@/types';
 
 interface ReferenceFaceSelectorProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  platform: string;
-  apiBase: string;
   targetType: "upload" | "set";
   sampleCount: number;
   targetFiles: File[];
@@ -25,7 +20,7 @@ interface ReferenceFaceSelectorProps {
 }
 
 export function ReferenceFaceSelector({
-  open, onOpenChange, platform, apiBase, targetType, sampleCount, targetFiles, targetSetFiles,
+  open, onOpenChange, targetType, sampleCount, targetFiles, targetSetFiles,
   initialFaces = [], initialThreshold = 0.6, onConfirm
 }: ReferenceFaceSelectorProps) {
   
@@ -53,7 +48,6 @@ export function ReferenceFaceSelector({
   }, [open, totalItems, initialFaces, initialThreshold]);
 
   const handleScan = async () => {
-    // Validate inputs
     if (targetType === "upload" && targetFiles.length === 0) {
       toast.error("No target files selected to scan.");
       return;
@@ -84,17 +78,10 @@ export function ReferenceFaceSelector({
         filesToScan.forEach(f => fd.append('file_ids', f));
       }
 
-      const res = await fetch(`${apiBase}/api/v1/extract-faces`, {
-        method: 'POST',
-        headers: { 'X-Client-Platform': platform },
-        body: fd
-      });
-
-      if (!res.ok) throw new Error(await res.text());
-      
-      const data = await res.json();
+      const data = await api.extractFaces(fd);
       if (data.faces && data.faces.length > 0) {
         setScannedFaces(data.faces);
+        toast.success(`Found ${data.faces.length} face(s)`);
       } else {
         toast.info("No faces detected in the target media.");
       }

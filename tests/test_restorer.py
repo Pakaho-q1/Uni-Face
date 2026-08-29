@@ -17,12 +17,12 @@ class TestFaceRestorer(unittest.TestCase):
         
         mock_ort_session.return_value = mock_session
         
-        restorer = FaceRestorer(model_name='gfpgan_1.4')
+        restorer = FaceRestorer()
         
         mock_ort_session.assert_called_once()
         self.assertFalse(restorer.has_weight)
 
-    @patch('modules.restorer.get_combined_mask')
+    @patch('uniface.modules.restorer.get_combined_mask')
     @patch('onnxruntime.InferenceSession')
     def test_restore_execution(self, mock_ort_session, mock_get_combined_mask):
         mock_session = MagicMock()
@@ -38,7 +38,7 @@ class TestFaceRestorer(unittest.TestCase):
         # Mask shape (512, 512)
         mock_get_combined_mask.return_value = np.ones((512, 512), dtype=np.float32)
         
-        restorer = FaceRestorer(model_name='gfpgan_1.4')
+        restorer = FaceRestorer()
         
         target_face = Face(
             bbox=np.array([50, 50, 150, 150]),

@@ -6,6 +6,9 @@ from typing import List
 
 from uniface.core.config import MODEL_PATHS, DEFAULT_EXECUTION_PROVIDERS
 from uniface.core.state import state
+from uniface.core.logging import get_logger
+
+logger = get_logger(__name__)
 
 class MaskParser:
     """
@@ -13,7 +16,7 @@ class MaskParser:
     """
     def __init__(self):
         self.providers = state.providers
-        self.xseg_session = None
+        self.xseg_sessions = {}
         self.bisenet_session = None
         
         # Region mappings for BiseNet
@@ -24,21 +27,28 @@ class MaskParser:
             'cloth': 16, 'hair': 17, 'hat': 18
         }
         
-    def _get_xseg_session(self):
-        if self.xseg_session is None:
-            self.xseg_session = onnxruntime.InferenceSession(str(MODEL_PATHS["xseg_1"]), providers=self.providers, sess_options=state.session_options)
-            print(f"[xseg_1] Active Providers: {self.xseg_session.get_providers()}")
-        return self.xseg_session
+    def _get_xseg_session(self, model_name: str = None):
+        target_model = model_name or getattr(state, "occlusion_model", "xseg_1") or "xseg_1"
+        if target_model not in MODEL_PATHS:
+            target_model = "xseg_1"
+            
+        if target_model not in self.xseg_sessions:
+            sess_options = getattr(state, "session_options", None)
+            model_path = str(MODEL_PATHS[target_model])
+            self.xseg_sessions[target_model] = onnxruntime.InferenceSession(model_path, providers=self.providers, sess_options=sess_options)
+            logger.debug(f"Loading Occlusion Model: {target_model} (Active Providers: {self.xseg_sessions[target_model].get_providers()})")
+        return self.xseg_sessions[target_model]
         
     def _get_bisenet_session(self):
         if self.bisenet_session is None:
-            self.bisenet_session = onnxruntime.InferenceSession(str(MODEL_PATHS["bisenet_resnet_34"]), providers=self.providers, sess_options=state.session_options)
-            print(f"[bisenet_resnet_34] Active Providers: {self.bisenet_session.get_providers()}")
+            sess_options = getattr(state, "session_options", None)
+            self.bisenet_session = onnxruntime.InferenceSession(str(MODEL_PATHS["bisenet_resnet_34"]), providers=self.providers, sess_options=sess_options)
+            logger.debug(f"Loading Region Model: bisenet_resnet_34 (Active Providers: {self.bisenet_session.get_providers()})")
         return self.bisenet_session
         
-    def create_occlusion_mask(self, crop_vision_frame: np.ndarray) -> np.ndarray:
+    def create_occlusion_mask(self, crop_vision_frame: np.ndarray, model_name: str = None) -> np.ndarray:
         """
-        Create a mask of occlusions (e.g. hands, hair over face) using xseg_1.
+        Create a mask of occlusions (e.g. hands, hair over face) using selected xseg model.
         """
         model_size = (256, 256)
         
@@ -47,10 +57,10 @@ class MaskParser:
         prepare_vision_frame = np.expand_dims(prepare_vision_frame, axis=0).astype(np.float32) / 255.0
         
         # Run Inference
-        occlusion_mask = self._get_xseg_session().run(None, {self._get_xseg_session().get_inputs()[0].name: prepare_vision_frame})[0][0]
+        session = self._get_xseg_session(model_name)
+        occlusion_mask = session.run(None, {session.get_inputs()[0].name: prepare_vision_frame})[0][0]
         
-        # xseg_1 output might be (H, W, 1) or (1, H, W, 1). We took [0][0], so we likely have (H, W, 1) or similar.
-        # Let's ensure it's (H, W)
+        # Ensure it's (H, W)
         if occlusion_mask.ndim == 3 and occlusion_mask.shape[-1] == 1:
             occlusion_mask = np.squeeze(occlusion_mask, axis=-1)
             
@@ -81,6 +91,8 @@ class MaskParser:
         ffhq_crop, ffhq_matrix = face_math.warp_face_by_face_landmark_5(
             temp_vision_frame, target_face.landmark_5, 'ffhq_512', model_size
         )
+        if ffhq_crop is None or ffhq_matrix is None or affine_matrix is None:
+            return np.ones(crop_shape[:2], dtype=np.float32)
         
         # 2. Prepare tensor (expects NCHW, RGB, normalized with mean/std)
         prepare_vision_frame = ffhq_crop[:, :, ::-1].astype(np.float32) / 255.0
@@ -102,8 +114,9 @@ class MaskParser:
         box_mask, paste_matrix = face_math.calculate_paste_area(temp_vision_frame, ffhq_crop, ffhq_matrix)
         x1, y1, x2, y2 = box_mask
         full_mask = np.zeros(temp_vision_frame.shape[:2], dtype=np.float32)
-        inverse_mask = cv2.warpAffine(ffhq_mask, paste_matrix, (x2 - x1, y2 - y1), flags=cv2.INTER_LINEAR)
-        full_mask[y1:y2, x1:x2] = inverse_mask
+        if x2 > x1 and y2 > y1 and paste_matrix is not None:
+            inverse_mask = cv2.warpAffine(ffhq_mask, paste_matrix, (x2 - x1, y2 - y1), flags=cv2.INTER_LINEAR)
+            full_mask[y1:y2, x1:x2] = inverse_mask
         
         # 5. Project full frame mask to the target crop space (e.g. arcface_128)
         crop_mask = cv2.warpAffine(full_mask, affine_matrix, (crop_shape[1], crop_shape[0]), flags=cv2.INTER_LINEAR)
@@ -166,7 +179,7 @@ class MaskParser:
         mask = np.clip(mask, 0.0, 1.0)
         return mask
 
-    def get_combined_mask(self, temp_vision_frame: np.ndarray, crop_vision_frame: np.ndarray, mask_types: List[str] = None, target_face = None, affine_matrix = None) -> np.ndarray:
+    def get_combined_mask(self, temp_vision_frame: np.ndarray, crop_vision_frame: np.ndarray, mask_types: List[str] = None, target_face = None, affine_matrix = None, occlusion_model: str = None) -> np.ndarray:
         """
         Match FaceFusion exactly: dynamically reduce enabled mask types.
         FaceFusion default is ['box'].
@@ -180,7 +193,7 @@ class MaskParser:
             crop_masks.append(self.create_box_mask(crop_vision_frame))
             
         if 'occlusion' in mask_types:
-            crop_masks.append(self.create_occlusion_mask(crop_vision_frame))
+            crop_masks.append(self.create_occlusion_mask(crop_vision_frame, occlusion_model))
             
         if 'region' in mask_types:
             crop_masks.append(self.create_region_mask(temp_vision_frame, target_face, affine_matrix, crop_vision_frame.shape))
@@ -209,5 +222,5 @@ def get_parser() -> MaskParser:
                 parser_app = MaskParser()
     return parser_app
 
-def get_combined_mask(temp_vision_frame: np.ndarray, crop_vision_frame: np.ndarray, mask_types: List[str] = None, target_face = None, affine_matrix = None) -> np.ndarray:
-    return get_parser().get_combined_mask(temp_vision_frame, crop_vision_frame, mask_types, target_face, affine_matrix)
+def get_combined_mask(temp_vision_frame: np.ndarray, crop_vision_frame: np.ndarray, mask_types: List[str] = None, target_face = None, affine_matrix = None, occlusion_model: str = None) -> np.ndarray:
+    return get_parser().get_combined_mask(temp_vision_frame, crop_vision_frame, mask_types, target_face, affine_matrix, occlusion_model)

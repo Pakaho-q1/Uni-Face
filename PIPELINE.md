@@ -86,16 +86,15 @@ graph TD
 | State | `uniface/core/state.py` | 🟢 done | ini + argparse; global singleton (safe with 1 worker thread) |
 | Service | `uniface/core/service.py` | 🟢 done | business logic layer; detect/swap/restore/color |
 | Image Service | `uniface/core/image_service.py` | 🟢 done | batch image processing via SwarmEngine |
-| Video Service | `uniface/core/video_service.py` | 🟢 done | ffmpeg extract → swarm → merge; resume support |
-| SwarmEngine | `uniface/core/swarm.py` | 🟢 done | parallel pipeline with dynamic backpressure tuner |
+| JobManager | `uniface/core/job_manager.py` | 🟢 done | job queue, state updates, background executor |
 | Face Model | `uniface/core/face_model.py` | 🟢 done | safetensors save/load for multi-image face embedding |
-| Dispatcher | `uniface/core/dispatcher.py` | 🟡 stub | placeholder only — real flow lives in service.py |
+| Workspace | `uniface/core/workspace.py` | 🟢 done | workspace directories & target sets pool |
 | Detector | `uniface/modules/detector.py` | 🟢 done | yoloface+2dfan4+arcface (adapter, ไม่ copy logic facefusion) |
 | Parser (mask) | `uniface/modules/parser.py` | 🟢 done | xseg_1 (occluder) + bisenet_resnet_34 (region) + box + eyes |
 | Compositor | `uniface/modules/compositor.py` | 🟢 done | multi-scale color match + seamless blend |
-| Swaper base (interface) | `uniface/modules/swaper/base.py` | 🟢 done | abstract: load(), swap() |
-| Swaper: inswapper | `uniface/modules/swaper/inswapper.py` | 🟢 done | affine transform + onnx session |
-| Swaper: hyperswap | `uniface/modules/swaper/hyperswap.py` | 🟡 in_progress | skeleton exists |
+| Swapper base (interface) | `uniface/modules/swapper/base.py` | 🟢 done | abstract: swap() |
+| Swapper: inswapper | `uniface/modules/swapper/inswapper.py` | 🟢 done | affine transform + onnx session |
+| Swapper: hyperswap | `uniface/modules/swapper/hyperswap.py` | 🟢 done | affine transform + onnx session |
 | Swaper: simswap | `uniface/modules/swaper/simswap.py` | 🔴 not_started | |
 | Restorer | `uniface/modules/restorer.py` | 🟢 done | GFPGAN/GPEN/CodeFormer, รับ-คืน (frame,mask) |
 | Image IO | `uniface/modules/io/image_io.py` | 🟡 stub | minimal placeholder |

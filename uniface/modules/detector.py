@@ -6,7 +6,10 @@ from typing import List, Tuple
 from uniface.core.types import Face
 from uniface.core.config import MODEL_PATHS
 from uniface.core.state import state
+from uniface.core.logging import get_logger
 from uniface.modules.utils import face_math
+
+logger = get_logger(__name__)
 
 class NativeDetector:
     """
@@ -16,12 +19,13 @@ class NativeDetector:
     def __init__(self):
         # 1. Initialize ONNX Sessions directly from our paths
         self.providers = state.providers
-        self.yoloface_session = onnxruntime.InferenceSession(str(MODEL_PATHS["yoloface"]), providers=self.providers, sess_options=state.session_options)
-        print(f"[yoloface] Active Providers: {self.yoloface_session.get_providers()}")
-        self.fan_session = onnxruntime.InferenceSession(str(MODEL_PATHS["2dfan4"]), providers=self.providers, sess_options=state.session_options)
-        print(f"[2dfan4] Active Providers: {self.fan_session.get_providers()}")
-        self.arcface_session = onnxruntime.InferenceSession(str(MODEL_PATHS["arcface"]), providers=self.providers, sess_options=state.session_options)
-        print(f"[arcface] Active Providers: {self.arcface_session.get_providers()}")
+        sess_options = getattr(state, "session_options", None)
+        self.yoloface_session = onnxruntime.InferenceSession(str(MODEL_PATHS["yoloface"]), providers=self.providers, sess_options=sess_options)
+        logger.debug(f"Loading Detector Model: yoloface (Active Providers: {self.yoloface_session.get_providers()})")
+        self.fan_session = onnxruntime.InferenceSession(str(MODEL_PATHS["2dfan4"]), providers=self.providers, sess_options=sess_options)
+        logger.debug(f"Loading Landmarker Model: 2dfan4 (Active Providers: {self.fan_session.get_providers()})")
+        self.arcface_session = onnxruntime.InferenceSession(str(MODEL_PATHS["arcface"]), providers=self.providers, sess_options=sess_options)
+        logger.debug(f"Loading Recognizer Model: arcface (Active Providers: {self.arcface_session.get_providers()})")
         
         # Configuration
         self.face_detector_size = (640, 640)

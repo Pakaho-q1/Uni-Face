@@ -208,6 +208,19 @@ class TestSwarmPoisonPill(unittest.TestCase):
         self.assertEqual(e.queues['color'].qsize(), 1)
         self.assertEqual(e.queues['out'].qsize(), 0)
 
+# -- Issue #16: Providers parsing must return non-empty list without None --
+class TestProviderParsing(unittest.TestCase):
+    def test_parse_providers_returns_valid_list(self):
+        from uniface.core.state import state
+        p_cpu = state.parse_providers("cpu")
+        self.assertIsInstance(p_cpu, list)
+        self.assertNotIn(None, p_cpu)
+        self.assertEqual(p_cpu, ["CPUExecutionProvider"])
+        
+        p_cuda = state.parse_providers("cuda")
+        self.assertIsInstance(p_cuda, list)
+        self.assertNotIn(None, p_cuda)
+        self.assertEqual(p_cuda[0][0], "CUDAExecutionProvider")
 
 if __name__ == '__main__':
     unittest.main(verbosity=2)

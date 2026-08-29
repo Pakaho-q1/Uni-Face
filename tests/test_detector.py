@@ -13,7 +13,7 @@ class TestNativeDetector(unittest.TestCase):
         self.assertEqual(mock_ort_session.call_count, 3)
         
     @patch('onnxruntime.InferenceSession')
-    @patch('modules.detector.face_math.apply_nms')
+    @patch('uniface.modules.detector.face_math.apply_nms')
     def test_detect_returns_faces(self, mock_apply_nms, mock_ort_session):
         # Mock the ONNX session instances
         mock_yolo_session = MagicMock()

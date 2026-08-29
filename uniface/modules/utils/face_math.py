@@ -33,19 +33,34 @@ WARP_TEMPLATE_SET = {
 }
 
 def estimate_matrix_by_face_landmark_5(face_landmark_5, warp_template, crop_size):
-    warp_template_norm = WARP_TEMPLATE_SET.get(warp_template) * crop_size
-    affine_matrix = cv2.estimateAffinePartial2D(face_landmark_5, warp_template_norm, method=cv2.RANSAC, ransacReprojThreshold=100)[0]
-    return affine_matrix
+    if face_landmark_5 is None or len(face_landmark_5) < 3:
+        return None
+    warp_template_norm = WARP_TEMPLATE_SET.get(warp_template)
+    if warp_template_norm is None:
+        return None
+    warp_template_norm = warp_template_norm * crop_size
+    res = cv2.estimateAffinePartial2D(face_landmark_5, warp_template_norm, method=cv2.RANSAC, ransacReprojThreshold=100)
+    if res is None or res[0] is None:
+        return None
+    return res[0]
 
 def warp_face_by_face_landmark_5(temp_vision_frame, face_landmark_5, warp_template, crop_size):
+    if temp_vision_frame is None or face_landmark_5 is None:
+        return None, None
     affine_matrix = estimate_matrix_by_face_landmark_5(face_landmark_5, warp_template, crop_size)
+    if affine_matrix is None:
+        return None, None
     crop_vision_frame = cv2.warpAffine(temp_vision_frame, affine_matrix, crop_size, borderMode=cv2.BORDER_REPLICATE, flags=cv2.INTER_AREA)
     return crop_vision_frame, affine_matrix
 
 def calculate_paste_area(temp_vision_frame, crop_vision_frame, affine_matrix):
+    if temp_vision_frame is None or crop_vision_frame is None or affine_matrix is None:
+        return np.array([0, 0, 0, 0]), np.zeros((2, 3), dtype=np.float32)
     temp_height, temp_width = temp_vision_frame.shape[:2]
     crop_height, crop_width = crop_vision_frame.shape[:2]
     inverse_matrix = cv2.invertAffineTransform(affine_matrix)
+    if inverse_matrix is None:
+        return np.array([0, 0, 0, 0]), np.zeros((2, 3), dtype=np.float32)
     crop_points = np.array([ [ 0, 0 ], [ crop_width, 0 ], [ crop_width, crop_height ], [ 0, crop_height ] ])
     paste_region_points = transform_points(crop_points, inverse_matrix)
     paste_region_point_min = np.floor(paste_region_points.min(axis=0)).astype(int)
@@ -59,15 +74,18 @@ def calculate_paste_area(temp_vision_frame, crop_vision_frame, affine_matrix):
     return paste_bounding_box, paste_matrix
 
 def paste_back(temp_vision_frame, crop_vision_frame, crop_vision_mask, affine_matrix):
+    if temp_vision_frame is None or crop_vision_frame is None or affine_matrix is None:
+        return temp_vision_frame
     paste_bounding_box, paste_matrix = calculate_paste_area(temp_vision_frame, crop_vision_frame, affine_matrix)
     x1, y1, x2, y2 = paste_bounding_box
     paste_width = x2 - x1
     paste_height = y2 - y1
+    if paste_width <= 0 or paste_height <= 0:
+        return temp_vision_frame
     inverse_vision_mask = cv2.warpAffine(crop_vision_mask, paste_matrix, (paste_width, paste_height)).clip(0, 1)
     inverse_vision_mask = np.expand_dims(inverse_vision_mask, axis=-1)
     inverse_vision_frame = cv2.warpAffine(crop_vision_frame, paste_matrix, (paste_width, paste_height), borderMode=cv2.BORDER_REPLICATE)
     
-    # We must operate on a copy if we want functional purity, but since we modify in place we do:
     temp_vision_frame = temp_vision_frame.copy()
     paste_vision_frame = temp_vision_frame[y1:y2, x1:x2]
     paste_vision_frame = paste_vision_frame * (1 - inverse_vision_mask) + inverse_vision_frame * inverse_vision_mask
@@ -111,12 +129,16 @@ def normalize_bounding_box(bounding_box):
     return np.array([ x1, y1, x2, y2 ])
 
 def transform_points(points, matrix):
+    if matrix is None:
+        return points
     points = points.reshape(-1, 1, 2)
     points = cv2.transform(points, matrix)
     points = points.reshape(-1, 2)
     return points
 
 def transform_bounding_box(bounding_box, matrix):
+    if matrix is None:
+        return bounding_box
     points = np.array([
         [ bounding_box[0], bounding_box[1] ],
         [ bounding_box[2], bounding_box[1] ],

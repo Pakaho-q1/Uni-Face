@@ -3,7 +3,8 @@ import sys
 import shutil
 import pytest
 from io import BytesIO
-from fastapi.testclient import TestClient
+import asyncio
+import httpx
 
 # Ensure we can import uniface
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -14,7 +15,26 @@ from uniface.core.state import state
 # Disable auth for tests
 state.auth = None
 
-client = TestClient(app)
+class SyncTestClient:
+    def __init__(self, app):
+        self.transport = httpx.ASGITransport(app=app)
+    def get(self, url, **kwargs):
+        async def _req():
+            async with httpx.AsyncClient(transport=self.transport, base_url="http://test") as c:
+                return await c.get(url, **kwargs)
+        return asyncio.run(_req())
+    def post(self, url, **kwargs):
+        async def _req():
+            async with httpx.AsyncClient(transport=self.transport, base_url="http://test") as c:
+                return await c.post(url, **kwargs)
+        return asyncio.run(_req())
+    def delete(self, url, **kwargs):
+        async def _req():
+            async with httpx.AsyncClient(transport=self.transport, base_url="http://test") as c:
+                return await c.delete(url, **kwargs)
+        return asyncio.run(_req())
+
+client = SyncTestClient(app)
 
 TEST_PLATFORM = "pytest_target_sets"
 TEST_SET_NAME = "Test Meme Set"
@@ -131,8 +151,11 @@ def test_6_delete_specific_files():
         headers={"x-client-platform": TEST_PLATFORM}
     )
     files = response.json()["target_sets"][0]["files"]
-    assert len(files) == 1
-    assert files[0]["filename"] == "image2.png"
+    assert len(files) == 2
+    filenames = [f["filename"] for f in files]
+    assert "image1.jpg" not in filenames
+    assert "image2.png" in filenames
+    assert "linked_img.jpg" in filenames
 
 def test_7_delete_set():
     response = client.delete(

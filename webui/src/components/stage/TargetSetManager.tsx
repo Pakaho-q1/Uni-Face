@@ -1,32 +1,23 @@
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useCallback } from 'react';
 import { Upload, X, Trash2, Plus, Image as ImageIcon, Video } from 'lucide-react';
-import SparkMD5 from 'spark-md5';
+import { toast } from 'sonner';
 
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Button } from '@/components/ui/button';
-
-interface TargetFile {
-  filename: string;
-  file_id: string;
-  url: string;
-  duration?: number;
-}
-
-interface TargetSet {
-  name: string;
-  files: TargetFile[];
-}
+import { api } from '@/services/api';
+import { uploadFilesToTargetSet } from '@/services/hashService';
+import type { TargetFile, TargetSet } from '@/types';
 
 interface TargetSetManagerProps {
   open: boolean;
-  platform: string;
   chunkSizeMB: number;
+  galleryRes?: string;
   onOpenChange: (open: boolean) => void;
   onSelectSet: (files: TargetFile[]) => void;
 }
 
-function VideoThumbnail({ url, initialDuration }: { url: string, initialDuration?: number }) {
+function VideoThumbnail({ url, initialDuration }: { url: string; initialDuration?: number }) {
   const [duration, setDuration] = useState<string>("MP4");
   const [needsMetadata, setNeedsMetadata] = useState<boolean>(!initialDuration);
 
@@ -51,7 +42,7 @@ function VideoThumbnail({ url, initialDuration }: { url: string, initialDuration
 
   return (
     <>
-      <video src={url} className="w-full h-full object-cover bg-black" onLoadedMetadata={handleLoadedMetadata} preload="metadata" />
+      <video src={url} className="w-full h-full object-contain bg-black" onLoadedMetadata={handleLoadedMetadata} preload="metadata" />
       <div className="absolute bottom-1 left-1 bg-black/60 rounded px-1.5 py-0.5 text-[10px] font-mono text-white flex items-center">
         <Video size={10} className="mr-1" /> {duration}
       </div>
@@ -59,7 +50,7 @@ function VideoThumbnail({ url, initialDuration }: { url: string, initialDuration
   );
 }
 
-export function TargetSetManager({ open, platform, chunkSizeMB, onOpenChange, onSelectSet }: TargetSetManagerProps) {
+export function TargetSetManager({ open, chunkSizeMB, galleryRes, onOpenChange, onSelectSet }: TargetSetManagerProps) {
   const [sets, setSets] = useState<TargetSet[]>([]);
   const [selectedSetName, setSelectedSetName] = useState<string>('');
   
@@ -72,29 +63,25 @@ export function TargetSetManager({ open, platform, chunkSizeMB, onOpenChange, on
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Fetch sets when dialog opens
-  useEffect(() => {
-    if (open) {
-      fetchSets();
-    }
-  }, [open]);
-
-  const fetchSets = async () => {
+  const fetchSets = useCallback(async () => {
     try {
-      const res = await fetch('/api/v1/target-sets', {
-        headers: { 'X-Client-Platform': platform }
-      });
-      const data = await res.json();
+      const data = await api.getTargetSets();
       setSets(data.target_sets || []);
       
-      // If we don't have a selection but we have sets, pick the first one
       if (!selectedSetName && data.target_sets && data.target_sets.length > 0) {
         setSelectedSetName(data.target_sets[0].name);
       }
     } catch (e) {
       console.error('Failed to fetch target sets:', e);
+      toast.error('Failed to load target sets');
     }
-  };
+  }, [selectedSetName]);
+
+  useEffect(() => {
+    if (open) {
+      fetchSets();
+    }
+  }, [open, fetchSets]);
 
   const currentSet = sets.find(s => s.name === selectedSetName);
 
@@ -107,40 +94,30 @@ export function TargetSetManager({ open, platform, chunkSizeMB, onOpenChange, on
 
   const handleCreateSet = async () => {
     if (!newSetName.trim()) return;
-    const fd = new FormData();
-    fd.append('name', newSetName);
     try {
-      const res = await fetch('/api/v1/target-sets', { 
-        method: 'POST', 
-        body: fd,
-        headers: { 'X-Client-Platform': platform }
-      });
-      if (res.ok) {
-        const data = await res.json();
-        setIsCreating(false);
-        setNewSetName('');
-        setSelectedSetName(data.name);
-        await fetchSets();
-      }
-    } catch (e) {
-      console.error(e);
+      const data = await api.createTargetSet(newSetName.trim());
+      setIsCreating(false);
+      setNewSetName('');
+      setSelectedSetName(data.name);
+      toast.success(`Created target set "${data.name}"`);
+      await fetchSets();
+    } catch (e: any) {
+      toast.error(e.message || 'Failed to create target set');
     }
   };
 
   const handleDeleteSet = async () => {
     if (!selectedSetName) return;
-    if (!confirm(`Are you sure you want to delete set "${selectedSetName}"?`)) return;
+    if (!window.confirm(`Are you sure you want to delete set "${selectedSetName}"?`)) return;
     
     try {
-      await fetch(`/api/v1/target-sets/${encodeURIComponent(selectedSetName)}`, { 
-        method: 'DELETE',
-        headers: { 'X-Client-Platform': platform }
-      });
+      await api.deleteTargetSet(selectedSetName);
       const newSets = sets.filter(s => s.name !== selectedSetName);
       setSets(newSets);
       setSelectedSetName(newSets.length > 0 ? newSets[0].name : '');
-    } catch (e) {
-      console.error(e);
+      toast.success(`Deleted target set "${selectedSetName}"`);
+    } catch (e: any) {
+      toast.error(e.message || 'Failed to delete target set');
     }
   };
 
@@ -148,20 +125,12 @@ export function TargetSetManager({ open, platform, chunkSizeMB, onOpenChange, on
     if (!selectedSetName || selectedFiles.size === 0) return;
     
     try {
-      const res = await fetch(`/api/v1/target-sets/${encodeURIComponent(selectedSetName)}/delete-files`, {
-        method: 'POST',
-        headers: { 
-          'Content-Type': 'application/json',
-          'X-Client-Platform': platform 
-        },
-        body: JSON.stringify({ filenames: Array.from(selectedFiles) })
-      });
-      if (res.ok) {
-        setSelectedFiles(new Set());
-        await fetchSets();
-      }
-    } catch (e) {
-      console.error(e);
+      await api.deleteTargetSetFiles(selectedSetName, Array.from(selectedFiles));
+      toast.success(`Deleted ${selectedFiles.size} file(s) from set`);
+      setSelectedFiles(new Set());
+      await fetchSets();
+    } catch (e: any) {
+      toast.error(e.message || 'Failed to delete files');
     }
   };
 
@@ -172,37 +141,6 @@ export function TargetSetManager({ open, platform, chunkSizeMB, onOpenChange, on
     setSelectedFiles(next);
   };
 
-  // Chunked Hashing implementation
-  const calculateHash = (file: File): Promise<string> => {
-    return new Promise((resolve, reject) => {
-      const chunkSize = (chunkSizeMB || 100) * 1024 * 1024;
-      const chunks = Math.ceil(file.size / chunkSize);
-      let currentChunk = 0;
-      const spark = new SparkMD5.ArrayBuffer();
-      const fileReader = new FileReader();
-
-      fileReader.onload = (e) => {
-        if (e.target?.result) {
-          spark.append(e.target.result as ArrayBuffer);
-        }
-        currentChunk++;
-        if (currentChunk < chunks) {
-          loadNext();
-        } else {
-          resolve(spark.end());
-        }
-      };
-      fileReader.onerror = () => reject(fileReader.error);
-
-      const loadNext = () => {
-        const start = currentChunk * chunkSize;
-        const end = Math.min(start + chunkSize, file.size);
-        fileReader.readAsArrayBuffer(file.slice(start, end));
-      };
-      loadNext();
-    });
-  };
-
   const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
     if (!files || files.length === 0 || !selectedSetName) return;
@@ -211,99 +149,12 @@ export function TargetSetManager({ open, platform, chunkSizeMB, onOpenChange, on
     setUploadProgress(0);
     
     try {
-      // 1. Calculate hashes (dynamic batching based on size limit)
-      const fileHashes: { filename: string, hash: string, file: File }[] = [];
-      const maxMemoryBytes = (chunkSizeMB || 100) * 1024 * 1024;
-      
-      let currentBatch: File[] = [];
-      let currentBatchMemory = 0;
-      let completed = 0;
-
-      const processBatch = async (batch: File[]) => {
-        const batchPromises = batch.map(async (file) => {
-          const hash = await calculateHash(file);
-          return { filename: file.name, hash, file };
-        });
-        const results = await Promise.all(batchPromises);
-        fileHashes.push(...results);
-        completed += batch.length;
-        setUploadProgress((completed / files.length) * 50);
-      };
-
-      for (let i = 0; i < files.length; i++) {
-        const file = files[i];
-        const footprint = Math.min(file.size, maxMemoryBytes);
-
-        // If adding this file exceeds the memory limit (and batch is not empty), process the batch first
-        if (currentBatchMemory + footprint > maxMemoryBytes && currentBatch.length > 0) {
-          await processBatch(currentBatch);
-          currentBatch = [];
-          currentBatchMemory = 0;
-        }
-
-        currentBatch.push(file);
-        currentBatchMemory += footprint;
-      }
-
-      // Process any remaining files in the final batch
-      if (currentBatch.length > 0) {
-        await processBatch(currentBatch);
-      }
-
-      // 2. Preflight check
-      setUploadProgress(60);
-      const preflightRes = await fetch('/api/v1/target-sets/preflight', {
-        method: 'POST',
-        headers: { 
-          'Content-Type': 'application/json',
-          'X-Client-Platform': platform
-        },
-        body: JSON.stringify({ files: fileHashes.map(f => ({ filename: f.filename, hash: f.hash })) })
-      });
-      const preflightData = await preflightRes.json();
-      
-      const exists = preflightData.results.filter((r: any) => r.status === 'exists');
-      const newFiles = preflightData.results.filter((r: any) => r.status === 'new');
-
-      // 3. Link existing
-      setUploadProgress(70);
-      if (exists.length > 0) {
-        await fetch(`/api/v1/target-sets/${encodeURIComponent(selectedSetName)}/link`, {
-          method: 'POST',
-          headers: { 
-            'Content-Type': 'application/json',
-            'X-Client-Platform': platform
-          },
-          body: JSON.stringify({ files: exists })
-        });
-      }
-
-      // 4. Upload new
-      setUploadProgress(80);
-      if (newFiles.length > 0) {
-        const fd = new FormData();
-        const hashesStr: string[] = [];
-        
-        newFiles.forEach((nf: any) => {
-          const originalObj = fileHashes.find(f => f.filename === nf.filename);
-          if (originalObj) {
-            fd.append('files', originalObj.file);
-            hashesStr.push(originalObj.hash);
-          }
-        });
-        
-        await fetch(`/api/v1/target-sets/${encodeURIComponent(selectedSetName)}/upload`, {
-          method: 'POST',
-          headers: { 'X-Client-Platform': platform },
-          body: fd
-        });
-      }
-
-      setUploadProgress(100);
+      await uploadFilesToTargetSet(selectedSetName, files, chunkSizeMB, setUploadProgress);
+      toast.success(`Uploaded ${files.length} file(s) to "${selectedSetName}"`);
       await fetchSets();
-      
-    } catch (e) {
+    } catch (e: any) {
       console.error('Upload failed:', e);
+      toast.error('Upload failed', { description: e.message });
     } finally {
       setIsUploading(false);
       setUploadProgress(0);
@@ -451,7 +302,11 @@ export function TargetSetManager({ open, platform, chunkSizeMB, onOpenChange, on
                         <VideoThumbnail url={file.url} initialDuration={file.duration} />
                       ) : (
                         <>
-                          <img src={file.url} className="w-full h-full object-cover bg-black" alt={file.filename} />
+                          <img 
+                            src={`${file.url}&res=${galleryRes || '384'}`} 
+                            className="w-full h-full object-contain bg-black" 
+                            alt={file.filename} 
+                          />
                           <div className="absolute bottom-1 left-1 bg-black/60 rounded px-1.5 py-0.5 text-[10px] font-mono text-white flex items-center">
                             <ImageIcon size={10} className="mr-1" /> IMG
                           </div>

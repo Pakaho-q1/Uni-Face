@@ -1,57 +1,59 @@
+import { useState, useEffect, useCallback } from 'react';
 import { X } from 'lucide-react';
+import { toast } from 'sonner';
 import { Slider } from '@/components/ui/slider';
 import { Switch } from '@/components/ui/switch';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { useStickyState } from '@/hooks/useStickyState';
+import { ImmichExportConfig } from '@/components/shared/ImmichExportConfig';
+import { api } from '@/services/api';
+import { 
+  SWAP_MODELS, 
+  RESTORE_MODELS, 
+  EXECUTION_PROVIDERS, 
+  MASK_TYPES, 
+  MASK_REGIONS, 
+  OCCLUSION_MODELS,
+  PREVIEW_RESOLUTIONS,
+  GALLERY_RESOLUTIONS 
+} from '@/config';
+import type { SettingsState } from '@/types';
 
 interface SettingsPanelProps {
   open: boolean;
   onClose: () => void;
-  settings: ReturnType<typeof useSettings>;
-}
-
-export function useSettings() {
-  const [executionProvider, setExecutionProvider] = useStickyState('cpu', 'setting_executionProvider');
-  const [executionThreadCount, setExecutionThreadCount] = useStickyState([4], 'setting_executionThreadCount');
-  const [swapModel, setSwapModel] = useStickyState('inswapper_128', 'setting_swapModel');
-  const [swapWeight, setSwapWeight] = useStickyState([65], 'setting_swapWeight');
-  const [restoreModel, setRestoreModel] = useStickyState('gfpgan_1.4', 'setting_restoreModel');
-  const [restoreWeight, setRestoreWeight] = useStickyState([100], 'setting_restoreWeight');
-  const [restoreBlend, setRestoreBlend] = useStickyState([100], 'setting_restoreBlend');
-  const [faceRestore, setFaceRestore] = useStickyState(true, 'setting_faceRestore');
-  const [colorMatch, setColorMatch] = useStickyState(false, 'setting_colorMatch');
-  const [similarity, setSimilarity] = useStickyState(false, 'setting_similarity');
-  const [previewFreq, setPreviewFreq] = useStickyState([15], 'setting_previewFreq');
-  const [previewRes, setPreviewRes] = useStickyState('320', 'setting_previewRes');
-  const [maskTypes, setMaskTypes] = useStickyState<string[]>(['box'], 'setting_maskTypes');
-  const [maskRegions, setMaskRegions] = useStickyState<string[]>(['skin', 'l_brow', 'r_brow', 'l_eye', 'r_eye', 'nose', 'mouth', 'u_lip', 'l_lip'], 'setting_maskRegions');
-  const [skipExisting, setSkipExisting] = useStickyState(true, 'setting_skipExisting');
-  const [hashChunkSize, setHashChunkSize] = useStickyState([100], 'setting_hashChunkSize');
-  const [scanSampleCount, setScanSampleCount] = useStickyState([5], 'setting_scanSampleCount');
-
-  return {
-    executionProvider, setExecutionProvider,
-    executionThreadCount, setExecutionThreadCount,
-    swapModel, setSwapModel,
-    swapWeight, setSwapWeight,
-    restoreModel, setRestoreModel,
-    restoreWeight, setRestoreWeight,
-    restoreBlend, setRestoreBlend,
-    faceRestore, setFaceRestore,
-    colorMatch, setColorMatch,
-    similarity, setSimilarity,
-    previewFreq, setPreviewFreq,
-    previewRes, setPreviewRes,
-    maskTypes, setMaskTypes,
-    maskRegions, setMaskRegions,
-    skipExisting, setSkipExisting,
-    hashChunkSize, setHashChunkSize,
-    scanSampleCount, setScanSampleCount
-  };
+  settings: SettingsState;
 }
 
 export function SettingsPanel({ open, onClose, settings }: SettingsPanelProps) {
+  const [isConnecting, setIsConnecting] = useState(false);
+  const [isConnected, setIsConnected] = useState(false);
+
+  const testImmichConnection = useCallback(async (showToast = false) => {
+    if (!settings.immichUrl || !settings.immichApiKey) return;
+    setIsConnecting(true);
+    try {
+      const data = await api.testImmich(settings.immichUrl, settings.immichApiKey);
+      setIsConnected(data.success);
+      if (showToast) {
+        if (data.success) toast.success(data.message || "Connected to Immich successfully");
+        else toast.error(data.message || "Failed to connect to Immich");
+      }
+    } catch (e: any) {
+      setIsConnected(false);
+      if (showToast) toast.error(e.message || "Connection failed");
+    } finally {
+      setIsConnecting(false);
+    }
+  }, [settings.immichUrl, settings.immichApiKey]);
+
+  // Auto-connect on mount if we have credentials
+  useEffect(() => {
+    if (settings.immichUrl && settings.immichApiKey) {
+      testImmichConnection(false);
+    }
+  }, [settings.immichUrl, settings.immichApiKey, testImmichConnection]);
+
   return (
     <aside className={`absolute md:relative right-0 top-0 bottom-0 z-[60] md:z-10 shrink-0 h-full bg-card transition-all duration-300 overflow-hidden ${open ? 'w-[85vw] max-w-[300px] md:w-[300px] border-l border-border shadow-2xl md:shadow-none' : 'w-0 border-none'}`}>
       <div className="w-[85vw] max-w-[300px] md:w-[300px] h-full flex flex-col relative">
@@ -71,9 +73,9 @@ export function SettingsPanel({ open, onClose, settings }: SettingsPanelProps) {
                 <SelectValue placeholder="Select Provider" />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="cpu">CPU (Slow)</SelectItem>
-                <SelectItem value="cuda">CUDA (Nvidia GPU)</SelectItem>
-                <SelectItem value="trt">TensorRT (Fastest)</SelectItem>
+                {EXECUTION_PROVIDERS.map(p => (
+                  <SelectItem key={p.id} value={p.id}>{p.label}</SelectItem>
+                ))}
               </SelectContent>
             </Select>
           </div>
@@ -99,10 +101,9 @@ export function SettingsPanel({ open, onClose, settings }: SettingsPanelProps) {
                 <SelectValue placeholder="Select swap model" />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="inswapper_128">inswapper_128</SelectItem>
-                <SelectItem value="inswapper_128_fp16">inswapper_128_fp16</SelectItem>
-                <SelectItem value="hyperswap_1b_256">hyperswap_1b_256</SelectItem>
-                <SelectItem value="hyperswap_1c_256">hyperswap_1c_256</SelectItem>
+                {SWAP_MODELS.map(m => (
+                  <SelectItem key={m.id} value={m.id}>{m.label}</SelectItem>
+                ))}
               </SelectContent>
             </Select>
           </div>
@@ -126,12 +127,9 @@ export function SettingsPanel({ open, onClose, settings }: SettingsPanelProps) {
                 <SelectValue placeholder="Select restore model" />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="gfpgan_1.4">gfpgan_1.4</SelectItem>
-                <SelectItem value="codeformer">codeformer</SelectItem>
-                <SelectItem value="gpen_bfr_256">gpen_bfr_256</SelectItem>
-                <SelectItem value="gpen_bfr_512">gpen_bfr_512</SelectItem>
-                <SelectItem value="gpen_bfr_1024">gpen_bfr_1024</SelectItem>
-                <SelectItem value="restoreformer_plus_plus">restoreformer_plus_plus</SelectItem>
+                {RESTORE_MODELS.map(m => (
+                  <SelectItem key={m.id} value={m.id}>{m.label}</SelectItem>
+                ))}
               </SelectContent>
             </Select>
           </div>
@@ -157,12 +155,7 @@ export function SettingsPanel({ open, onClose, settings }: SettingsPanelProps) {
         <div className="space-y-4">
           <label className="flex justify-between text-xs text-muted-foreground">Masking Types</label>
           <div className="space-y-3">
-            {[
-              { id: 'box', label: 'Box (Default)' },
-              { id: 'occlusion', label: 'Occlusion (Hands, Hair)' },
-              { id: 'region', label: 'Face Region Only' },
-              { id: 'eyes', label: 'Priority Eyes (Force)' }
-            ].map(mask => (
+            {MASK_TYPES.map(mask => (
               <div key={mask.id} className="flex items-center space-x-2">
                 <Checkbox 
                   id={`mask-${mask.id}`} 
@@ -183,21 +176,32 @@ export function SettingsPanel({ open, onClose, settings }: SettingsPanelProps) {
             ))}
           </div>
 
+          {settings.maskTypes.includes('occlusion') && (
+            <div className="pl-6 space-y-1.5 mt-2 border-l border-border/50">
+              <label className="text-[10px] text-muted-foreground font-medium">Occlusion Mask Model</label>
+              <Select value={settings.occlusionModel} onValueChange={settings.setOcclusionModel}>
+                <SelectTrigger className="w-full text-xs h-8">
+                  <SelectValue placeholder="Select occlusion model" />
+                </SelectTrigger>
+                <SelectContent>
+                  {OCCLUSION_MODELS.map(m => (
+                    <SelectItem key={m.id} value={m.id}>
+                      <div className="flex flex-col text-left">
+                        <span className="font-medium text-xs">{m.label}</span>
+                        {m.description && <span className="text-[10px] text-muted-foreground">{m.description}</span>}
+                      </div>
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          )}
+
           {settings.maskTypes.includes('region') && (
             <div className="pl-6 space-y-2 mt-2 border-l border-border/50">
               <label className="text-[10px] text-muted-foreground">Select Regions</label>
               <div className="grid grid-cols-2 gap-2">
-                {[
-                  { id: 'skin', label: 'Skin' },
-                  { id: 'l_brow', label: 'Left Brow' },
-                  { id: 'r_brow', label: 'Right Brow' },
-                  { id: 'l_eye', label: 'Left Eye' },
-                  { id: 'r_eye', label: 'Right Eye' },
-                  { id: 'nose', label: 'Nose' },
-                  { id: 'mouth', label: 'Mouth' },
-                  { id: 'u_lip', label: 'Upper Lip' },
-                  { id: 'l_lip', label: 'Lower Lip' }
-                ].map(region => (
+                {MASK_REGIONS.map(region => (
                   <div key={region.id} className="flex items-center space-x-2">
                     <Checkbox 
                       id={`region-${region.id}`} 
@@ -265,14 +269,143 @@ export function SettingsPanel({ open, onClose, settings }: SettingsPanelProps) {
               <SelectValue placeholder="Select resolution" />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="320">320p (Fastest)</SelectItem>
-              <SelectItem value="480">480p</SelectItem>
-              <SelectItem value="720">720p (High Quality)</SelectItem>
+              {PREVIEW_RESOLUTIONS.map(r => (
+                <SelectItem key={r.id} value={r.id}>{r.label}</SelectItem>
+              ))}
             </SelectContent>
           </Select>
         </div>
 
-        <p className="text-[11px] text-muted-foreground pt-4 leading-relaxed">
+        <div className="space-y-2">
+          <label className="text-xs text-muted-foreground">Gallery Resolution (On-the-Fly)</label>
+          <Select value={settings.galleryRes} onValueChange={settings.setGalleryRes}>
+            <SelectTrigger className="w-full text-xs h-8">
+              <SelectValue placeholder="Select gallery resolution" />
+            </SelectTrigger>
+            <SelectContent>
+              {GALLERY_RESOLUTIONS.map(r => (
+                <SelectItem key={r.id} value={r.id}>{r.label}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+
+        <div className="h-px bg-border w-full mt-4" />
+        
+        {/* Immich Settings Section */}
+        <div className="space-y-4 pt-2">
+          <div className="flex items-center justify-between">
+            <h3 className="font-mono text-[11px] tracking-widest text-primary">IMMICH INTEGRATION</h3>
+          </div>
+          
+          <div className="space-y-2">
+            <label className="text-xs text-muted-foreground">Immich Server URL</label>
+            <input 
+              type="text" 
+              className="flex h-8 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+              placeholder="http://localhost:2283"
+              value={settings.immichUrl}
+              onChange={(e) => {
+                settings.setImmichUrl(e.target.value);
+                setIsConnected(false);
+              }}
+            />
+          </div>
+
+          <div className="space-y-2">
+            <label className="text-xs text-muted-foreground">API Key</label>
+            <input 
+              type="password" 
+              className="flex h-8 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+              placeholder="Enter API Key"
+              value={settings.immichApiKey}
+              onChange={(e) => {
+                settings.setImmichApiKey(e.target.value);
+                setIsConnected(false);
+              }}
+            />
+            <button 
+              className="w-full mt-2 h-8 rounded-md bg-secondary text-secondary-foreground text-xs font-medium hover:bg-secondary/80 flex items-center justify-center transition-colors disabled:opacity-50"
+              onClick={() => testImmichConnection(true)}
+              disabled={isConnecting || !settings.immichUrl || !settings.immichApiKey}
+            >
+              {isConnecting ? "Connecting..." : isConnected ? "✓ Connected" : "Connect to Immich"}
+            </button>
+          </div>
+
+          <div className="space-y-1.5">
+            <div className="flex items-center justify-between">
+              <label className="text-xs text-muted-foreground">Immich Local Path (Hardlink)</label>
+              <span className="text-[10px] text-muted-foreground/60 font-mono">Optional</span>
+            </div>
+            <input 
+              type="text" 
+              className="flex h-8 w-full rounded-md border border-input bg-transparent px-3 py-1 text-xs shadow-sm transition-colors placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring font-mono"
+              placeholder="e.g. D:\immich\upload (Default: uni-face.ini)"
+              value={settings.immichLocalPath}
+              onChange={(e) => settings.setImmichLocalPath(e.target.value)}
+            />
+            <p className="text-[10px] text-muted-foreground/70 leading-tight">
+              Host directory of Immich library for instant 0 MB hardlinks. Leave blank to use uni-face.ini.
+            </p>
+          </div>
+
+          {isConnected && (
+            <>
+              <div className="flex items-center justify-between pt-2 border-t border-border mt-4">
+                <label className="text-xs font-medium text-foreground">Auto-Save to Immich</label>
+                <Switch checked={settings.immichAutoSave} onCheckedChange={settings.setImmichAutoSave} />
+              </div>
+
+              {settings.immichAutoSave && (
+                <div className="pl-2 border-l-2 border-border space-y-4">
+                  <ImmichExportConfig
+                    immichUrl={settings.immichUrl}
+                    immichApiKey={settings.immichApiKey}
+                    isNewAlbum={settings.immichNewAlbum}
+                    onIsNewAlbumChange={settings.setImmichNewAlbum}
+                    albumName={settings.immichAlbum}
+                    onAlbumNameChange={settings.setImmichAlbum}
+                    tags={settings.immichTags}
+                    onTagsChange={settings.setImmichTags}
+                  />
+                  <div className="flex items-center justify-between">
+                    <label className="text-xs text-muted-foreground">Delete local files after upload</label>
+                    <Switch checked={settings.immichDeleteLocal} onCheckedChange={settings.setImmichDeleteLocal} />
+                  </div>
+                </div>
+              )}
+            </>
+          )}
+        </div>
+
+        <div className="h-px bg-border w-full" />
+
+        {/* Workspace Storage Management */}
+        <div className="space-y-3">
+          <label className="text-xs font-medium text-foreground flex items-center justify-between">
+            <span>Storage & Temporary Cache</span>
+          </label>
+          <p className="text-[11px] text-muted-foreground leading-relaxed">
+            Target Sets and Active Inputs are preserved during your session. You can free disk space by clearing one-off upload files.
+          </p>
+          <button
+            type="button"
+            className="w-full text-xs h-8 rounded-md border border-border bg-secondary/50 text-foreground hover:bg-destructive/20 hover:text-destructive hover:border-destructive/40 font-mono transition-colors flex items-center justify-center gap-1.5"
+            onClick={async () => {
+              try {
+                const res = await api.clearTempWorkspace();
+                toast.success(`Cleared ${res.deleted_count} temporary files (${(res.reclaimed_bytes / (1024 * 1024)).toFixed(1)} MB reclaimed)`);
+              } catch (e: any) {
+                toast.error('Failed to clear temporary workspace');
+              }
+            }}
+          >
+            <span>🗑️ Clear Temporary Uploads</span>
+          </button>
+        </div>
+
+        <p className="text-[11px] text-muted-foreground pt-2 leading-relaxed">
           All settings are saved automatically to your browser.
         </p>
 

@@ -24,6 +24,7 @@ class StateManager:
         self.swap_model = "inswapper_128"
         self.swap_weight = 0.65
         self.mask_types = ["box"]
+        self.occlusion_model = "xseg_1"
         
         self.restore_model = "gfpgan_1.4"
         self.restore_weight = 1.0
@@ -37,6 +38,15 @@ class StateManager:
         self.similarity: bool = False
         self.reference_face_ids: List[str] = []
         self.reference_threshold: float = 0.6
+        
+        # Immich Settings
+        self.immich_url: str = ""
+        self.immich_api_key: str = ""
+        self.immich_auto_save: bool = False
+        self.immich_new_album: bool = False
+        self.immich_album: str = ""
+        self.immich_tags: List[str] = []
+        self.immich_delete_local: bool = False
 
     def init(self, parse_args=True):
         ini_path = ROOT_DIR / "uni-face.ini"
@@ -60,9 +70,20 @@ class StateManager:
                 if "swap_model" in p: self.swap_model = p["swap_model"]
                 if "swap_weight" in p: self.swap_weight = float(p["swap_weight"])
                 if "mask_types" in p: self.mask_types = p["mask_types"].split()
+                if "occlusion_model" in p: self.occlusion_model = p["occlusion_model"]
                 if "restore_model" in p: self.restore_model = p["restore_model"]
                 if "restore_weight" in p: self.restore_weight = float(p["restore_weight"])
                 if "restore_blend" in p: self.restore_blend = int(p["restore_blend"])
+            
+            if "IMMICH" in config:
+                i = config["IMMICH"]
+                if "url" in i: self.immich_url = i["url"].strip()
+                if "api_key" in i: self.immich_api_key = i["api_key"].strip()
+                if "auto_save" in i: self.immich_auto_save = i["auto_save"].lower() == "true"
+                if "new_album" in i: self.immich_new_album = i["new_album"].lower() == "true"
+                if "album" in i: self.immich_album = i["album"].strip()
+                if "tags" in i: self.immich_tags = [t for t in i["tags"].split(",") if t.strip()]
+                if "delete_local" in i: self.immich_delete_local = i["delete_local"].lower() == "true"
 
         if not parse_args:
             return
@@ -102,16 +123,16 @@ class StateManager:
         if args.restore_weight is not None: self.restore_weight = args.restore_weight
         if args.restore_blend is not None: self.restore_blend = args.restore_blend
 
-    def _parse_providers(self, provider_str):
+    def parse_providers(self, provider_str: str) -> list:
         mapping = {
             "trt": "TensorrtExecutionProvider",
             "cuda": "CUDAExecutionProvider",
             "cpu": "CPUExecutionProvider"
         }
-        self.providers = []
         import onnxruntime
         cache_path = os.path.join(ROOT_DIR, '.caches', onnxruntime.get_version_string())
         
+        providers = []
         for p in provider_str.split():
             provider_name = mapping.get(p.lower())
             if not provider_name:
@@ -129,20 +150,26 @@ class StateManager:
                 cuda_options = {
                     'cudnn_conv_algo_search': 'DEFAULT'
                 }
-                self.providers = [(provider_name, trt_options), ('CUDAExecutionProvider', cuda_options), 'CPUExecutionProvider']
+                providers = [(provider_name, trt_options), ('CUDAExecutionProvider', cuda_options), 'CPUExecutionProvider']
                 break
             elif provider_name == 'CUDAExecutionProvider':
                 cuda_options = {
                     'cudnn_conv_algo_search': 'DEFAULT'
                 }
-                self.providers = [(provider_name, cuda_options), 'CPUExecutionProvider']
+                providers = [(provider_name, cuda_options), 'CPUExecutionProvider']
                 break
             else:
-                self.providers = ['CPUExecutionProvider']
+                providers = ['CPUExecutionProvider']
                 break
                 
-        if not self.providers:
-            self.providers = ["CPUExecutionProvider"]
+        if not providers:
+            providers = ["CPUExecutionProvider"]
+            
+        self.providers = providers
+        return providers
+
+    def _parse_providers(self, provider_str: str) -> list:
+        return self.parse_providers(provider_str)
 
 state = StateManager()
 

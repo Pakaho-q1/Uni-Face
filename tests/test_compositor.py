@@ -42,8 +42,8 @@ class TestCompositor(unittest.TestCase):
         matched = compositor_app.match_color(self.source_crop, self.target_crop)
         self.assertEqual(matched.shape, (512, 512, 3))
 
-    @patch('modules.compositor.face_math')
-    @patch('modules.compositor.get_combined_mask')
+    @patch('uniface.modules.compositor.face_math')
+    @patch('uniface.modules.compositor.get_combined_mask')
     def test_composite(self, mock_get_mask, mock_face_math):
         # Mock warp
         dummy_crop = np.zeros((512, 512, 3), dtype=np.uint8)
