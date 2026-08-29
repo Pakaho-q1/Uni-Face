@@ -90,13 +90,13 @@ def install_models(force: bool = False) -> Dict[str, int]:
         if need_download:
             logger.info(f"Downloading {model_name}...")
             if download_file(model_url, local_path, desc=model_name):
-                logger.info(f"[✓] {model_name} downloaded successfully.")
+                logger.info(f"[OK] {model_name} downloaded successfully.")
                 success_count += 1
             else:
-                logger.error(f"[x] Failed to download {model_name}.")
+                logger.error(f"[FAIL] Failed to download {model_name}.")
                 fail_count += 1
         else:
-            logger.info(f"[✓] {model_name} is up-to-date.")
+            logger.info(f"[OK] {model_name} is up-to-date.")
             success_count += 1
             
     logger.info("-" * 40)
