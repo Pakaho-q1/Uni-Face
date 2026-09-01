@@ -14,6 +14,8 @@ import {
   MASK_TYPES, 
   MASK_REGIONS, 
   OCCLUSION_MODELS,
+  TARGET_GENDERS,
+  FACE_ORDERS,
   PREVIEW_RESOLUTIONS,
   GALLERY_RESOLUTIONS 
 } from '@/config';
@@ -243,6 +245,54 @@ export function SettingsPanel({ open, onClose, settings }: SettingsPanelProps) {
           <div className="flex items-center justify-between">
             <label className="text-xs text-muted-foreground">Skip Existing / Overwrite (Retry System)</label>
             <Switch checked={settings.skipExisting} onCheckedChange={settings.setSkipExisting} />
+          </div>
+        </div>
+
+        <div className="h-px bg-border w-full" />
+
+        {/* Face Selection & Filtering */}
+        <div className="space-y-3.5">
+          <label className="flex justify-between text-xs text-muted-foreground font-medium">Face Selection & Priority</label>
+          
+          {/* Gender Filter Toggle */}
+          <div className="flex items-center justify-between">
+            <div className="space-y-0.5">
+              <label className="text-xs text-foreground">Gender Filter</label>
+              <p className="text-[10px] text-muted-foreground">Target a specific detected gender</p>
+            </div>
+            <Switch checked={settings.genderFilter} onCheckedChange={settings.setGenderFilter} />
+          </div>
+
+          {/* Target Gender Dropdown (when enabled) */}
+          {settings.genderFilter && (
+            <div className="pl-4 space-y-1.5 border-l-2 border-primary/40">
+              <label className="text-[10px] text-muted-foreground">Target Gender</label>
+              <Select value={settings.targetGender} onValueChange={settings.setTargetGender}>
+                <SelectTrigger className="w-full text-xs h-8">
+                  <SelectValue placeholder="Select gender" />
+                </SelectTrigger>
+                <SelectContent>
+                  {TARGET_GENDERS.map(g => (
+                    <SelectItem key={g.id} value={g.id}>{g.label}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          )}
+
+          {/* Face Selection Priority Strategy */}
+          <div className="space-y-1.5">
+            <label className="text-xs text-muted-foreground">Face Selection Priority</label>
+            <Select value={settings.faceOrder} onValueChange={settings.setFaceOrder}>
+              <SelectTrigger className="w-full text-xs h-8">
+                <SelectValue placeholder="Select face priority" />
+              </SelectTrigger>
+              <SelectContent>
+                {FACE_ORDERS.map(o => (
+                  <SelectItem key={o.id} value={o.id}>{o.label}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
           </div>
         </div>
 

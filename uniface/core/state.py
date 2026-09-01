@@ -35,6 +35,9 @@ class StateManager:
         self.output_path = None
         self.mask_types: List[str] = ['box']
         self.mask_regions: List[str] = ['skin', 'l_brow', 'r_brow', 'l_eye', 'r_eye', 'nose', 'mouth', 'u_lip', 'l_lip']
+        self.occlusion_model: str = "xseg_1"
+        self.target_gender: str = "all"
+        self.face_order: str = "largest"
         self.similarity: bool = False
         self.reference_face_ids: List[str] = []
         self.reference_threshold: float = 0.6
@@ -71,6 +74,8 @@ class StateManager:
                 if "swap_weight" in p: self.swap_weight = float(p["swap_weight"])
                 if "mask_types" in p: self.mask_types = p["mask_types"].split()
                 if "occlusion_model" in p: self.occlusion_model = p["occlusion_model"]
+                if "target_gender" in p: self.target_gender = p["target_gender"]
+                if "face_order" in p: self.face_order = p["face_order"]
                 if "restore_model" in p: self.restore_model = p["restore_model"]
                 if "restore_weight" in p: self.restore_weight = float(p["restore_weight"])
                 if "restore_blend" in p: self.restore_blend = int(p["restore_blend"])

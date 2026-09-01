@@ -1,5 +1,5 @@
-import { useState, useEffect, useCallback, useMemo } from 'react';
-import { Cloud, Search, Video, Image as ImageIcon, Check, Loader2, User, Folder, Tag, X } from 'lucide-react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import { Cloud, Search, Video, Image as ImageIcon, Check, Loader2, User, Folder, Tag, X, ChevronDown } from 'lucide-react';
 import { toast } from 'sonner';
 
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog';
@@ -51,6 +51,26 @@ export function ImmichTargetManager({
   const [selectedId, setSelectedId] = useState<string>('');
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [comboboxOpen, setComboboxOpen] = useState(false);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const searchInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
+        setComboboxOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
+
+  useEffect(() => {
+    if (comboboxOpen) {
+      setTimeout(() => searchInputRef.current?.focus(), 50);
+    } else {
+      setSearchQuery('');
+    }
+  }, [comboboxOpen]);
 
   // Asset Gallery
   const [assets, setAssets] = useState<ImmichAsset[]>([]);
@@ -247,19 +267,22 @@ export function ImmichTargetManager({
           </div>
 
           {/* Top Control Bar: Searchable Combobox & Action Button */}
-          <div className="flex items-center gap-2 shrink-0 relative">
-            <div className="flex-1 relative">
-              <div 
-                className="flex items-center justify-between h-10 bg-secondary/40 border border-border rounded-md px-3 text-sm cursor-pointer hover:border-primary/50 transition-colors"
-                onClick={() => setComboboxOpen(!comboboxOpen)}
+          <div className="flex items-center gap-2 shrink-0">
+            <div ref={containerRef} className="flex-1 min-w-0 relative">
+              {/* Trigger Button */}
+              <button
+                type="button"
+                disabled={isCategoryLoading}
+                onClick={() => setComboboxOpen(prev => !prev)}
+                className="flex h-9 w-full items-center justify-between rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm transition-colors hover:bg-secondary/50 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50 text-left min-w-0"
               >
-                <div className="flex items-center gap-2 overflow-hidden truncate">
+                <div className="flex items-center gap-2 min-w-0 flex-1 truncate">
                   {selectedId ? (
                     <>
                       {categoryType === 'people' && (
                         <img 
                           src={ENDPOINTS.IMMICH_PERSON_THUMB(selectedId, immichUrl, immichApiKey)} 
-                          className="w-6 h-6 rounded-full object-cover border border-border bg-zinc-800"
+                          className="w-5 h-5 rounded-full object-cover border border-border bg-zinc-800 shrink-0"
                           alt="avatar"
                           onError={(e) => { e.currentTarget.style.display = 'none'; }}
                         />
@@ -267,78 +290,111 @@ export function ImmichTargetManager({
                       <span className="font-medium text-foreground truncate">{selectedItemLabel}</span>
                     </>
                   ) : (
-                    <span className="text-muted-foreground text-xs">
+                    <span className="text-muted-foreground text-xs truncate">
                       {isCategoryLoading 
                         ? `Loading ${categoryType}...` 
-                        : `Select ${categoryType === 'people' ? 'Person' : categoryType === 'albums' ? 'Album' : 'Tag'}...`}
+                        : `-- Select ${categoryType === 'people' ? 'Person' : categoryType === 'albums' ? 'Album' : 'Tag'} --`}
                     </span>
                   )}
                 </div>
-                <Search size={14} className="text-muted-foreground shrink-0" />
-              </div>
+                <ChevronDown size={14} className={`shrink-0 ml-2 text-muted-foreground transition-transform duration-200 ${comboboxOpen ? 'rotate-180' : ''}`} />
+              </button>
 
               {/* Combobox Dropdown Popover */}
               {comboboxOpen && (
-                <div className="absolute top-11 left-0 right-0 z-50 bg-popover border border-border rounded-md shadow-2xl overflow-hidden max-h-60 flex flex-col animate-in fade-in-50 zoom-in-95">
-                  <div className="p-2 border-b border-border bg-secondary/30 flex items-center gap-2">
-                    <Search size={14} className="text-muted-foreground ml-1" />
+                <div className="absolute top-full left-0 mt-1 w-full z-50 rounded-md border border-border bg-popover text-popover-foreground shadow-2xl overflow-hidden animate-in fade-in-0 zoom-in-95">
+                  {/* Search Bar */}
+                  <div className="p-2 border-b border-border flex items-center gap-2 bg-secondary/30">
+                    <Search size={14} className="text-muted-foreground shrink-0" />
                     <input
+                      ref={searchInputRef}
                       type="text"
-                      autoFocus
                       placeholder={`Search ${categoryType}...`}
                       className="w-full bg-transparent text-xs text-foreground focus:outline-none placeholder:text-muted-foreground"
                       value={searchQuery}
                       onChange={(e) => setSearchQuery(e.target.value)}
                     />
                     {searchQuery && (
-                      <button onClick={() => setSearchQuery('')} className="text-muted-foreground hover:text-foreground">
+                      <button 
+                        type="button"
+                        onClick={() => setSearchQuery('')} 
+                        className="text-muted-foreground hover:text-foreground"
+                        title="Clear search"
+                      >
                         <X size={12} />
                       </button>
                     )}
                   </div>
 
-                  <div className="overflow-y-auto p-1 max-h-48 custom-scrollbar">
+                  {/* Item List */}
+                  <div className="max-h-52 overflow-y-auto custom-scrollbar p-1">
+                    {selectedId && (
+                      <button
+                        type="button"
+                        className="w-full text-left px-2.5 py-1.5 text-xs text-muted-foreground hover:text-destructive hover:bg-destructive/10 rounded-sm transition-colors flex items-center justify-between"
+                        onClick={() => {
+                          setSelectedId('');
+                          setComboboxOpen(false);
+                        }}
+                      >
+                        <span>-- Clear Selection --</span>
+                        <X size={12} />
+                      </button>
+                    )}
+
                     {filteredItems.length === 0 ? (
-                      <div className="text-center py-4 text-xs text-muted-foreground">
-                        No {categoryType} found.
+                      <div className="py-4 text-center text-xs text-muted-foreground">
+                        {searchQuery ? `No ${categoryType} found matching "${searchQuery}"` : `No ${categoryType} available`}
                       </div>
                     ) : (
                       filteredItems.map((item: any) => {
                         const isSelected = item.id === selectedId;
+                        const name = item.name || item.albumName || '';
                         return (
-                          <div
+                          <button
                             key={item.id}
-                            className={`flex items-center justify-between p-2 rounded-md cursor-pointer text-xs transition-colors ${
-                              isSelected ? 'bg-primary/20 text-primary font-medium' : 'hover:bg-secondary text-foreground'
-                            }`}
+                            type="button"
                             onClick={() => {
                               setSelectedId(item.id);
                               setComboboxOpen(false);
-                              setSearchQuery('');
                             }}
+                            className={`w-full text-left px-2.5 py-1.5 text-xs rounded-sm transition-colors flex items-center justify-between ${
+                              isSelected 
+                                ? 'bg-primary/20 text-primary font-medium' 
+                                : 'hover:bg-secondary text-foreground'
+                            }`}
                           >
-                            <div className="flex items-center gap-2.5 overflow-hidden truncate">
+                            <div className="flex items-center gap-2 min-w-0 flex-1 truncate mr-2">
                               {categoryType === 'people' && (
                                 <img 
                                   src={ENDPOINTS.IMMICH_PERSON_THUMB(item.id, immichUrl, immichApiKey)} 
-                                  className="w-6 h-6 rounded-full object-cover border border-border shrink-0 bg-zinc-800" 
+                                  className="w-5 h-5 rounded-full object-cover border border-border shrink-0 bg-zinc-800" 
                                   alt={item.name}
                                   onError={(e) => { e.currentTarget.style.display = 'none'; }}
                                 />
                               )}
-                              <span className="truncate">{item.name || item.albumName}</span>
+                              <span className="truncate">{name}</span>
                             </div>
-                            {item.assetCount !== undefined && (
-                              <span className="text-[10px] font-mono text-muted-foreground ml-2">
-                                {item.assetCount}
-                              </span>
-                            )}
-                            {isSelected && <Check size={14} className="text-primary ml-2 shrink-0" />}
-                          </div>
+                            <div className="flex items-center gap-1.5 shrink-0">
+                              {item.assetCount !== undefined && (
+                                <span className="text-[10px] font-mono text-muted-foreground">
+                                  {item.assetCount}
+                                </span>
+                              )}
+                              {isSelected && <Check size={14} className="shrink-0 text-primary" />}
+                            </div>
+                          </button>
                         );
                       })
                     )}
                   </div>
+
+                  {/* Summary Footer */}
+                  {filteredItems.length > 0 && (
+                    <div className="px-2.5 py-1 text-[10px] text-muted-foreground bg-secondary/20 border-t border-border/50 flex justify-between">
+                      <span>{filteredItems.length} of {categoryType === 'people' ? people.length : categoryType === 'albums' ? albums.length : tags.length} {categoryType}</span>
+                    </div>
+                  )}
                 </div>
               )}
             </div>
@@ -346,7 +402,7 @@ export function ImmichTargetManager({
             {/* Dynamic Primary Action Button */}
             <Button
               variant="default"
-              className="h-10 px-4 shrink-0 font-mono text-xs tracking-wider bg-primary/20 text-primary hover:bg-primary/30 border border-primary/40 disabled:opacity-40"
+              className="h-9 px-4 shrink-0 font-mono text-xs tracking-wider bg-primary/20 text-primary hover:bg-primary/30 border border-primary/40 disabled:opacity-40"
               disabled={!selectedId || assets.length === 0 || isImporting || isAssetsLoading}
               onClick={handleUseTargets}
             >

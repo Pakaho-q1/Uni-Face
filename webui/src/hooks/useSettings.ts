@@ -71,6 +71,18 @@ export function useSettings(): SettingsState {
     DEFAULT_SETTINGS.occlusionModel, 
     'setting_occlusionModel'
   );
+  const [genderFilter, setGenderFilter] = useStickyState(
+    DEFAULT_SETTINGS.genderFilter,
+    'setting_genderFilter'
+  );
+  const [targetGender, setTargetGender] = useStickyState(
+    DEFAULT_SETTINGS.targetGender,
+    'setting_targetGender'
+  );
+  const [faceOrder, setFaceOrder] = useStickyState(
+    DEFAULT_SETTINGS.faceOrder,
+    'setting_faceOrder'
+  );
   const [skipExisting, setSkipExisting] = useStickyState(
     DEFAULT_SETTINGS.skipExisting, 
     'setting_skipExisting'
@@ -135,6 +147,9 @@ export function useSettings(): SettingsState {
     maskTypes, setMaskTypes,
     maskRegions, setMaskRegions,
     occlusionModel, setOcclusionModel,
+    genderFilter, setGenderFilter,
+    targetGender, setTargetGender,
+    faceOrder, setFaceOrder,
     skipExisting, setSkipExisting,
     hashChunkSize, setHashChunkSize,
     scanSampleCount, setScanSampleCount,

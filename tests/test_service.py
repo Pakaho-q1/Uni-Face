@@ -113,5 +113,44 @@ class TestFaceService(unittest.TestCase):
         # Global state was NOT mutated
         self.assertEqual(state.processors, ['swap', 'restore', 'color'])
 
+    def test_filter_and_sort_target_faces(self):
+        from uniface.core.service import filter_and_sort_target_faces
+        
+        # Create test faces:
+        # face1: Female (gender=0), bbox [10, 10, 50, 50] (area=1600), score=0.9
+        # face2: Male (gender=1), bbox [100, 100, 200, 200] (area=10000), score=0.7
+        # face3: Female (gender=0), bbox [300, 50, 350, 100] (area=2500), score=0.95
+        f1 = Face(bbox=np.array([10, 10, 50, 50]), score=0.9, gender=0)
+        f2 = Face(bbox=np.array([100, 100, 200, 200]), score=0.7, gender=1)
+        f3 = Face(bbox=np.array([300, 50, 350, 100]), score=0.95, gender=0)
+        
+        faces = [f1, f2, f3]
+        
+        # Test 1: Gender Filter Female + Largest
+        res = filter_and_sort_target_faces(faces, gender_filter="female", face_order="largest")
+        self.assertEqual(len(res), 2)
+        self.assertEqual(res[0], f3) # Area 2500 vs 1600
+        
+        # Test 2: Gender Filter Male
+        res = filter_and_sort_target_faces(faces, gender_filter="male", face_order="largest")
+        self.assertEqual(len(res), 1)
+        self.assertEqual(res[0], f2)
+        
+        # Test 3: Face Order Smallest
+        res = filter_and_sort_target_faces(faces, gender_filter="all", face_order="smallest")
+        self.assertEqual(res[0], f1) # Area 1600
+        
+        # Test 4: Face Order Highest Score
+        res = filter_and_sort_target_faces(faces, gender_filter="all", face_order="highest_score")
+        self.assertEqual(res[0], f3) # Score 0.95
+        
+        # Test 5: Face Order Left to Right
+        res = filter_and_sort_target_faces(faces, gender_filter="all", face_order="left_to_right")
+        self.assertEqual(res[0], f1) # X=10
+        
+        # Test 6: Face Order Right to Left
+        res = filter_and_sort_target_faces(faces, gender_filter="all", face_order="right_to_left")
+        self.assertEqual(res[0], f3) # X=300
+
 if __name__ == '__main__':
     unittest.main()

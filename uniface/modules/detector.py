@@ -26,17 +26,20 @@ class NativeDetector:
         logger.debug(f"Loading Landmarker Model: 2dfan4 (Active Providers: {self.fan_session.get_providers()})")
         self.arcface_session = onnxruntime.InferenceSession(str(MODEL_PATHS["arcface"]), providers=self.providers, sess_options=sess_options)
         logger.debug(f"Loading Recognizer Model: arcface (Active Providers: {self.arcface_session.get_providers()})")
+        self.genderage_session = onnxruntime.InferenceSession(str(MODEL_PATHS["genderage"]), providers=self.providers, sess_options=sess_options)
+        logger.debug(f"Loading Gender/Age Model: genderage (Active Providers: {self.genderage_session.get_providers()})")
         
         # Configuration
         self.face_detector_size = (640, 640)
         self.face_detector_score = 0.5
         
-        # arcface model template and size
+        # arcface / genderage model template and size
         self.arcface_template = 'arcface_112_v2'
         self.arcface_size = (112, 112)
+        self.genderage_size = (96, 96)
         
     def detect(self, frame: np.ndarray) -> List[Face]:
-        """Detect faces, find landmarks, and extract embeddings."""
+        """Detect faces, find landmarks, extract embeddings, and classify gender/age."""
         faces = []
         
         # 1. Detect bounding boxes and 5-point landmarks
@@ -56,12 +59,17 @@ class NativeDetector:
             # 3. Calculate embedding using ArcFace
             embedding = self._calculate_embedding(frame, refined_landmark_5)
             
+            # 4. Classify Gender & Age
+            gender, age = self._detect_gender_age(frame, refined_landmark_5)
+            
             face_obj = Face(
                 bbox=bbox,
                 score=score,
                 landmark_5=refined_landmark_5,
                 landmark_106=landmark_68, # Store 68 points here for swapping
-                embedding=embedding
+                embedding=embedding,
+                gender=gender,
+                age=age
             )
             faces.append(face_obj)
             
@@ -186,6 +194,26 @@ class NativeDetector:
         # Normalize vector
         face_embedding_norm = face_embedding / np.linalg.norm(face_embedding)
         return face_embedding_norm
+
+    def _detect_gender_age(self, temp_vision_frame: np.ndarray, face_landmark_5: np.ndarray) -> Tuple[int, int]:
+        """Native implementation of InsightFace genderage inference."""
+        crop_vision_frame, _ = face_math.warp_face_by_face_landmark_5(
+            temp_vision_frame, face_landmark_5, self.arcface_template, self.genderage_size
+        )
+        if crop_vision_frame is None:
+            return 0, 25
+            
+        # Prepare tensor (BGR to RGB, CHW, float32)
+        crop_vision_frame = crop_vision_frame[:, :, ::-1].transpose(2, 0, 1).astype(np.float32)
+        crop_vision_frame = np.expand_dims(crop_vision_frame, axis=0)
+        
+        # Run inference
+        output = self.genderage_session.run(None, {self.genderage_session.get_inputs()[0].name: crop_vision_frame})[0]
+        # output[0][:2] -> gender logits (0: female, 1: male)
+        # output[0][2] * 100 -> age
+        gender = int(np.argmax(output[0][:2]))
+        age = int(np.round(output[0][2] * 100))
+        return gender, age
 
 
 # Export a default instance

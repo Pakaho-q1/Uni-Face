@@ -109,17 +109,21 @@ Configure global defaults in `uni-face.ini`:
 
 ```ini
 [GLOBAL]
-providers = trt cuda cpu          # Execution provider fallback chain
-execution_thread_count = 6        # Worker threads
-video_encoder = h264_nvenc        # NVIDIA hardware encoder
-server_port = 3000
+providers = trt cuda cpu          # Execution provider fallback chain (trt, cuda, cpu)
+execution_thread_count = 6        # Worker threads for frame/image processing
+video_encoder = h264_nvenc        # Video encoder (h264_nvenc, hevc_nvenc, libx264)
+server_port = 3000                # WebUI and API port
+auth = q1:uniface                 # HTTP Basic Auth (username:password) for securing WebUI & API (optional)
 
 [PROCESSORS]
 processors = swap restore         # Active processors
 swap_model = inswapper_128        # Swap backend
 swap_weight = 0.80                # Blending weight (0.0–1.0)
 swap_boost = 512                  # Processing resolution
-mask_types = box                  # Mask strategy
+mask_types = box                  # Mask strategy (box, occlusion, region, eyes)
+occlusion_model = xseg_1          # Occlusion mask model (xseg_1, xseg_2, xseg_3)
+target_gender = all               # Gender filter: all, female, male
+face_order = largest              # Face selection priority: largest, smallest, highest_score, left_to_right, right_to_left, top_to_bottom, bottom_to_top
 restore_model = gpen_bfr_256      # Enhancer model
 restore_weight = 0.8              # Enhancer strength
 restore_blend = 100               # Blend strength (0–100)
@@ -127,13 +131,15 @@ restore_blend = 100               # Blend strength (0–100)
 [IMMICH]
 url = http://localhost:2283       # Immich Server URL
 api_key = your_immich_api_key     # Immich API Key
-local_path = D:\immich\library    # Host path for instant Hardlinks (optional)
+local_path = D:\immich\library    # Host path for instant 0 MB Hardlinks (optional)
 auto_save = false
 new_album = false
 album = 
 tags = 
 delete_local = false
 ```
+
+> **🔒 Security & Remote Access:** When deploying on a LAN or exposing via Tailscale / reverse proxy, uncomment or set `auth = username:password` under `[GLOBAL]` to enforce HTTP Basic Authentication across all WebUI routes, API endpoints, and WebSocket streams.
 
 ---
 

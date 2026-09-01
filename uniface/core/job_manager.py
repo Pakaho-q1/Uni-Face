@@ -35,6 +35,8 @@ class JobStartRequest(BaseModel):
     mask_types: list[str] = ["box"]
     mask_regions: list[str] = ['skin', 'l_brow', 'r_brow', 'l_eye', 'r_eye', 'nose', 'mouth', 'u_lip', 'l_lip']
     occlusion_model: str = "xseg_1"
+    target_gender: str = "all"
+    face_order: str = "largest"
     similarity: bool = False
     providers: list[str] = ["cpu"]
     execution_thread_count: int = 4
@@ -172,6 +174,8 @@ def run_job_background(job_id: str, req: JobStartRequest, x_client_platform: str
         mask_types=list(req.mask_types),
         mask_regions=list(req.mask_regions),
         occlusion_model=req.occlusion_model,
+        target_gender=getattr(req, "target_gender", "all"),
+        face_order=getattr(req, "face_order", "largest"),
         similarity=req.similarity,
         providers=parsed_providers,
         execution_thread_count=req.execution_thread_count,

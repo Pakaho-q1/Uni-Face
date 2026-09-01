@@ -37,6 +37,8 @@ class JobConfig:
     mask_types: list[str] = field(default_factory=lambda: ["box"])
     mask_regions: list[str] = field(default_factory=lambda: ['skin', 'l_brow', 'r_brow', 'l_eye', 'r_eye', 'nose', 'mouth', 'u_lip', 'l_lip'])
     occlusion_model: str = "xseg_1"
+    target_gender: str = "all"
+    face_order: str = "largest"
     similarity: bool = False
     providers: list[Any] = field(default_factory=lambda: ["CPUExecutionProvider"])
     execution_thread_count: int = 4
@@ -57,6 +59,8 @@ class JobConfig:
             mask_types=list(getattr(state_obj, "mask_types", ["box"])),
             mask_regions=list(getattr(state_obj, "mask_regions", ['skin', 'l_brow', 'r_brow', 'l_eye', 'r_eye', 'nose', 'mouth', 'u_lip', 'l_lip'])),
             occlusion_model=getattr(state_obj, "occlusion_model", "xseg_1"),
+            target_gender=getattr(state_obj, "target_gender", "all"),
+            face_order=getattr(state_obj, "face_order", "largest"),
             similarity=bool(getattr(state_obj, "similarity", False)),
             providers=list(getattr(state_obj, "providers", ["CPUExecutionProvider"])),
             execution_thread_count=int(getattr(state_obj, "execution_thread_count", 4)),

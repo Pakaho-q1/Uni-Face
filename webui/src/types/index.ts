@@ -27,6 +27,8 @@ export interface JobStartSettings {
   mask_types: string[];
   mask_regions: string[];
   occlusion_model?: string;
+  target_gender?: string;
+  face_order?: string;
   similarity: boolean;
   providers: string[];
   execution_thread_count: number;
@@ -137,6 +139,12 @@ export interface SettingsState {
   setMaskRegions: (v: string[]) => void;
   occlusionModel: string;
   setOcclusionModel: (v: string) => void;
+  genderFilter: boolean;
+  setGenderFilter: (v: boolean) => void;
+  targetGender: string;
+  setTargetGender: (v: string) => void;
+  faceOrder: string;
+  setFaceOrder: (v: string) => void;
   skipExisting: boolean;
   setSkipExisting: (v: boolean) => void;
   hashChunkSize: number[];

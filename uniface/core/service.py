@@ -13,6 +13,47 @@ from uniface.modules.compositor import composite
 
 logger = get_logger(__name__)
 
+def filter_and_sort_target_faces(
+    target_faces: list[Face], 
+    gender_filter: str = "all", 
+    face_order: str = "largest"
+) -> list[Face]:
+    """
+    Filter target faces by gender and sort them according to the selected selection priority.
+    """
+    if not target_faces:
+        return []
+        
+    candidates = list(target_faces)
+    
+    # 1. Gender Filter (0 = Female, 1 = Male)
+    if gender_filter == "female":
+        filtered = [f for f in candidates if f.gender == 0]
+        if filtered:
+            candidates = filtered
+    elif gender_filter == "male":
+        filtered = [f for f in candidates if f.gender == 1]
+        if filtered:
+            candidates = filtered
+            
+    # 2. Face Selection Order / Strategy
+    if face_order == "smallest":
+        candidates.sort(key=lambda x: (x.bbox[2] - x.bbox[0]) * (x.bbox[3] - x.bbox[1]))
+    elif face_order == "highest_score":
+        candidates.sort(key=lambda x: x.score, reverse=True)
+    elif face_order == "left_to_right":
+        candidates.sort(key=lambda x: x.bbox[0])
+    elif face_order == "right_to_left":
+        candidates.sort(key=lambda x: x.bbox[0], reverse=True)
+    elif face_order == "top_to_bottom":
+        candidates.sort(key=lambda x: x.bbox[1])
+    elif face_order == "bottom_to_top":
+        candidates.sort(key=lambda x: x.bbox[1], reverse=True)
+    else:  # "largest" (default)
+        candidates.sort(key=lambda x: (x.bbox[2] - x.bbox[0]) * (x.bbox[3] - x.bbox[1]), reverse=True)
+        
+    return candidates
+
 class FaceService:
     def __init__(self):
         pass
@@ -75,13 +116,21 @@ class FaceService:
                     return None, None
             else:
                 # Fallback if parsing failed
-                target_faces.sort(key=lambda x: (x.bbox[2]-x.bbox[0])*(x.bbox[3]-x.bbox[1]), reverse=True)
-                target_face = target_faces[0]
+                sorted_faces = filter_and_sort_target_faces(
+                    target_faces, 
+                    gender_filter=getattr(cfg, "target_gender", "all"), 
+                    face_order=getattr(cfg, "face_order", "largest")
+                )
+                target_face = sorted_faces[0] if sorted_faces else None
                 
         if not target_face:
-            # Fallback to largest face
-            target_faces.sort(key=lambda x: (x.bbox[2]-x.bbox[0])*(x.bbox[3]-x.bbox[1]), reverse=True)
-            target_face = target_faces[0]
+            # Sort & filter target faces based on gender and order strategy
+            sorted_faces = filter_and_sort_target_faces(
+                target_faces, 
+                gender_filter=getattr(cfg, "target_gender", "all"), 
+                face_order=getattr(cfg, "face_order", "largest")
+            )
+            target_face = sorted_faces[0] if sorted_faces else target_faces[0]
         
         # 2. Get/Detect Source Face
         if isinstance(source, np.ndarray):

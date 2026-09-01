@@ -128,6 +128,8 @@ export default function App() {
         mask_types: settings.maskTypes,
         mask_regions: settings.maskRegions,
         occlusion_model: settings.occlusionModel,
+        target_gender: settings.genderFilter ? settings.targetGender : 'all',
+        face_order: settings.faceOrder,
         similarity: settings.similarity,
         providers: [settings.executionProvider],
         execution_thread_count: settings.executionThreadCount[0],

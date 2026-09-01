@@ -61,6 +61,22 @@ export const PREVIEW_RESOLUTIONS: ModelOption[] = [
   { id: '720', label: '720p (High Quality)' },
 ];
 
+export const TARGET_GENDERS: ModelOption[] = [
+  { id: 'all', label: 'Any (Male & Female)' },
+  { id: 'female', label: 'Female Only' },
+  { id: 'male', label: 'Male Only' },
+];
+
+export const FACE_ORDERS: ModelOption[] = [
+  { id: 'largest', label: 'Largest Face (Default)' },
+  { id: 'smallest', label: 'Smallest Face' },
+  { id: 'highest_score', label: 'Highest Confidence' },
+  { id: 'left_to_right', label: 'Left to Right' },
+  { id: 'right_to_left', label: 'Right to Left' },
+  { id: 'top_to_bottom', label: 'Top to Bottom' },
+  { id: 'bottom_to_top', label: 'Bottom to Top' },
+];
+
 export const GALLERY_RESOLUTIONS: ModelOption[] = [
   { id: '256', label: '256p (Fastest)' },
   { id: '384', label: '384p (Balanced)' },

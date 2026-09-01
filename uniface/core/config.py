@@ -14,6 +14,7 @@ MODEL_PATHS = {
     "yoloface": MODELS_DIR / "yoloface_8n.onnx",
     "2dfan4": MODELS_DIR / "2dfan4.onnx",
     "arcface": INSIGHTFACE_MODELS_DIR / "w600k_r50.onnx",
+    "genderage": INSIGHTFACE_MODELS_DIR / "genderage.onnx",
     "xseg_1": MODELS_DIR / "xseg_1.onnx",
     "xseg_2": MODELS_DIR / "xseg_2.onnx",
     "xseg_3": MODELS_DIR / "xseg_3.onnx",
