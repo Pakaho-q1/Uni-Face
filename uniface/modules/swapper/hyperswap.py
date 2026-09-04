@@ -36,7 +36,7 @@ class Hyperswap(BaseSwapper):
         self.session = onnxruntime.InferenceSession(model_path, providers=self.providers, sess_options=sess_options)
         logger.debug(f"Loading Swapper Model: {model_key} {provider_names} (Active Providers: {self.session.get_providers()})")
         
-        self.template = 'arcface_128'
+        self.template = 'ffhq_512'
         self.crop_size = (256, 256)
         self.mean = [0.5, 0.5, 0.5]
         self.std = [0.5, 0.5, 0.5]

@@ -9,15 +9,16 @@ _lock = threading.Lock()
 
 def get_swapper(model_key: Optional[str] = None, providers: Optional[List[Any]] = None):
     model_key = model_key or getattr(state, "swap_model", "inswapper_128")
+    cache_key = (model_key, str(providers))
     with _lock:
-        if model_key not in _swapper_cache:
+        if cache_key not in _swapper_cache:
             if 'hyperswap' in model_key:
                 from uniface.modules.swapper.hyperswap import Hyperswap
-                _swapper_cache[model_key] = Hyperswap(model_key=model_key, providers=providers)
+                _swapper_cache[cache_key] = Hyperswap(model_key=model_key, providers=providers)
             else:
                 from uniface.modules.swapper.inswapper import Inswapper
-                _swapper_cache[model_key] = Inswapper(model_key=model_key, providers=providers)
-        return _swapper_cache[model_key]
+                _swapper_cache[cache_key] = Inswapper(model_key=model_key, providers=providers)
+        return _swapper_cache[cache_key]
 
 def swap(
     source_face: Face,
