@@ -63,8 +63,8 @@ class TestCompositor(unittest.TestCase):
         # Verify result
         self.assertEqual(result.shape, (1024, 1024, 3))
         
-        # Verify warp was called twice (for swapped and original)
-        self.assertEqual(mock_face_math.warp_face_by_face_landmark_5.call_count, 2)
+        # Verify warp was called (optimized to reuse affine matrix)
+        self.assertEqual(mock_face_math.warp_face_by_face_landmark_5.call_count, 1)
         
         # Verify mask was retrieved
         mock_get_mask.assert_called_once()

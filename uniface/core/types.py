@@ -45,6 +45,27 @@ class JobConfig:
     video_encoder: str = "h264_nvenc"
     reference_face_ids: list[str] = field(default_factory=list)
     reference_threshold: float = 0.6
+    face_detector_score: float = 0.65
+    face_landmark_score: float = 0.50
+    _cached_ref_embs: Optional[list[np.ndarray]] = field(default=None, repr=False, compare=False)
+
+    def get_reference_embeddings(self) -> list[np.ndarray]:
+        if self._cached_ref_embs is not None:
+            return self._cached_ref_embs
+        if not self.reference_face_ids:
+            self._cached_ref_embs = []
+            return self._cached_ref_embs
+        import base64
+        embs = []
+        for b64_emb in self.reference_face_ids:
+            try:
+                emb_bytes = base64.b64decode(b64_emb)
+                emb = np.frombuffer(emb_bytes, dtype=np.float32)
+                embs.append(emb / (np.linalg.norm(emb) + 1e-8))
+            except Exception:
+                continue
+        self._cached_ref_embs = embs
+        return self._cached_ref_embs
 
     @classmethod
     def from_state(cls, state_obj) -> 'JobConfig':
@@ -66,6 +87,8 @@ class JobConfig:
             execution_thread_count=int(getattr(state_obj, "execution_thread_count", 4)),
             video_encoder=str(getattr(state_obj, "video_encoder", "h264_nvenc")),
             reference_face_ids=list(getattr(state_obj, "reference_face_ids", [])),
-            reference_threshold=float(getattr(state_obj, "reference_threshold", 0.6))
+            reference_threshold=float(getattr(state_obj, "reference_threshold", 0.6)),
+            face_detector_score=float(getattr(state_obj, "face_detector_score", 0.65)),
+            face_landmark_score=float(getattr(state_obj, "face_landmark_score", 0.50))
         )
 

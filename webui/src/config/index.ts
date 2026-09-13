@@ -37,6 +37,8 @@ export const DEFAULT_SETTINGS = {
   hashChunkSize: 100,
   scanSampleCount: 5,
   referenceThreshold: 0.6,
+  faceDetectorScore: 65,
+  faceLandmarkScore: 50,
   
   // Immich
   immichUrl: '',

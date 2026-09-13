@@ -34,6 +34,3 @@ class BaseSwapper(ABC):
             np.ndarray: The modified full frame image with the swapped face.
         """
         pass
-
-# Backwards compatibility alias
-BaseSwaper = BaseSwapper

@@ -1,23 +1,47 @@
 import os
+import re
 import time
 import uuid
 import json
 import queue
+import hashlib
 import base64
 import cv2
 import threading
 import numpy as np
+from datetime import datetime
+import mimetypes
 from typing import Dict, Any, Optional
 from pydantic import BaseModel
 from uniface.core.types import Face, JobConfig
 
-from uniface.core.workspace import WORKSPACE_DIR, ensure_workspace, get_platform_dir, get_target_sets_dir
+from uniface.core.workspace import (
+    WORKSPACE_DIR, ensure_workspace, get_platform_dir, get_target_sets_dir,
+    get_jobs_dir, get_job_workspace, ensure_job_workspace, safe_hardlink, cleanup_job_workspace
+)
 from uniface.core.state import state
 from uniface.core.video_service import process_video
 from uniface.core.image_service import process_images_swarm
 from uniface.core.logging import get_logger
+from uniface.core import db
 
 logger = get_logger(__name__)
+
+IMAGE_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.webp', '.bmp', '.tiff', '.tif', '.jfif', '.avif'}
+
+def is_image_path(path: str) -> bool:
+    """Robust image check supporting modern formats (.webp, .jfif, .avif) on Windows."""
+    ext = os.path.splitext(path)[1].lower()
+    if ext in IMAGE_EXTENSIONS:
+        return True
+    mt, _ = mimetypes.guess_type(path)
+    return bool(mt and mt.startswith('image'))
+
+def generate_job_id() -> str:
+    """Generate human-readable, sortable, OS-safe Job ID: YYMMDD_HHMMSS_<short_hex>"""
+    now_str = datetime.now().strftime("%y%m%d_%H%M%S")
+    short_id = uuid.uuid4().hex[:4]
+    return f"{now_str}_{short_id}"
 
 class JobStartRequest(BaseModel):
     source_type: str = "image"
@@ -43,6 +67,8 @@ class JobStartRequest(BaseModel):
     skip_existing: bool = True
     reference_face_ids: list[str] = []
     reference_threshold: float = 0.6
+    face_detector_score: float = 0.65
+    face_landmark_score: float = 0.50
     
     immich_url: str = ""
     immich_api_key: str = ""
@@ -52,6 +78,35 @@ class JobStartRequest(BaseModel):
     immich_tags: list[str] = []
     immich_delete_local: bool = False
 
+def setup_job_hardlinks(platform: str, job_id: str, req: JobStartRequest) -> dict:
+    """Prepare ephemeral job sandbox and create zero-copy hardlinks for source and targets."""
+    uploads_dir, _ = ensure_workspace(platform)
+    ws = ensure_job_workspace(platform, job_id)
+    
+    # 1. Hardlink source file
+    if req.source_file_id:
+        if req.source_type == "model":
+            src_orig = os.path.join(get_platform_dir(platform), req.source_file_id)
+        else:
+            src_orig = os.path.join(uploads_dir, req.source_file_id)
+        if os.path.exists(src_orig):
+            src_link = os.path.join(ws["source_dir"], os.path.basename(req.source_file_id))
+            safe_hardlink(src_orig, src_link)
+            
+    # 2. Hardlink target files
+    for target_id in req.target_file_ids:
+        if target_id.startswith("set:"):
+            target_rel = target_id[4:]
+            target_orig = os.path.join(get_target_sets_dir(platform), target_rel)
+        else:
+            target_orig = os.path.join(uploads_dir, target_id)
+            
+        if os.path.exists(target_orig):
+            tgt_link = os.path.join(ws["target_dir"], os.path.basename(target_orig))
+            safe_hardlink(target_orig, tgt_link)
+            
+    return ws
+
 class PreviewSettings(BaseModel):
     enabled: bool
     resolution: int
@@ -60,7 +115,7 @@ class JobManager:
     # Status changes that must be saved immediately (not debounced)
     _IMMEDIATE_SAVE_KEYS = {"status", "error", "output_path"}
     # Minimum seconds between debounced (progress) saves
-    _SAVE_DEBOUNCE_SECS = 5.0
+    _SAVE_DEBOUNCE_SECS = 2.0
 
     def __init__(self):
         self.jobs: Dict[str, Dict[str, Any]] = {}
@@ -70,84 +125,362 @@ class JobManager:
         self.jobs_file = os.path.join(WORKSPACE_DIR, "jobs.json")
         self._save_lock = threading.Lock()
         self._last_save_time: float = 0.0
-        self.load_jobs()
-        
-    def load_jobs(self):
+        self.init_storage()
+
+    def init_storage(self):
+        db.init_db()
+        # 1. Migrate legacy jobs.json if exists
         if os.path.exists(self.jobs_file):
             try:
                 with open(self.jobs_file, "r", encoding="utf-8") as f:
-                    self.jobs = json.load(f)
-                    # Reset stuck jobs to failed if server restarted while processing
-                    for j_id, j_data in self.jobs.items():
-                        if j_data["status"] in ["processing", "pending"]:
-                            j_data["status"] = "failed"
-                            j_data["error"] = "Server restarted during processing"
+                    old_jobs = json.load(f)
+                for j_id, j_data in old_jobs.items():
+                    if not db.get_job_record(j_id):
+                        st = j_data.get("status", "pending")
+                        if st in ["pending", "processing"]:
+                            st = "failed"
+                        db.create_job_record(
+                            job_id=j_id,
+                            platform=j_data.get("platform", "unknown"),
+                            status=st,
+                            source_type=j_data.get("source_type", "image"),
+                            source_file_id=j_data.get("source_file_id"),
+                            source_name=j_data.get("source_name") or (os.path.basename(j_data.get("source_file_id")) if j_data.get("source_file_id") else None),
+                            target_type=j_data.get("target_type", "upload"),
+                            target_count=j_data.get("target_count", 0),
+                            target_summary=j_data.get("target_summary")
+                        )
+                        db.update_job_record(j_id, {
+                            "progress": j_data.get("progress", 0.0),
+                            "frames_done": j_data.get("frames_done", 0),
+                            "total_frames": j_data.get("total_frames", 0),
+                            "output_path": j_data.get("output_path"),
+                            "error": j_data.get("error")
+                        })
             except Exception as e:
-                print(f"Error loading jobs: {e}")
-                
+                logger.error(f"Error migrating jobs.json: {e}")
+
+        # 2. Reset any jobs left in pending/processing state from previous crash/restart
+        try:
+            with db._db_lock:
+                conn = db._get_connection()
+                conn.execute("UPDATE jobs SET status = 'failed', error = 'Server restarted during processing' WHERE status IN ('pending', 'processing')")
+                conn.commit()
+                conn.close()
+        except Exception as e:
+            logger.error(f"Error resetting active jobs in db: {e}")
+
     def save_jobs(self, force: bool = False):
-        """Write jobs to disk.
-        
-        If force=True, always writes immediately (used for status changes).
-        Otherwise debounces: skips write if last save was < _SAVE_DEBOUNCE_SECS ago.
-        This avoids hammering the disk with one write per video frame.
-        """
+        """Write jobs to disk (debounced) for file compatibility."""
+        if not hasattr(self, "_last_save_time"):
+            self._last_save_time = 0.0
+        if not hasattr(self, "_save_lock"):
+            self._save_lock = threading.Lock()
+            
         now = time.monotonic()
         if not force and (now - self._last_save_time) < self._SAVE_DEBOUNCE_SECS:
             return
         with self._save_lock:
             try:
-                with open(self.jobs_file, "w", encoding="utf-8") as f:
-                    json.dump(self.jobs, f, indent=4)
+                if hasattr(self, "jobs_file") and self.jobs_file:
+                    with open(self.jobs_file, "w", encoding="utf-8") as f:
+                        json.dump(self.jobs, f, indent=4)
                 self._last_save_time = time.monotonic()
             except Exception as e:
-                print(f"Error saving jobs: {e}")
+                logger.debug(f"Error saving jobs to file: {e}")
 
-    def create_job(self, platform: str) -> str:
-        job_id = str(uuid.uuid4())
+    def create_job(self, platform: str, req: Optional[JobStartRequest] = None) -> str:
+        job_id = generate_job_id()
+        
+        # Set up job workspace and zero-copy hardlinks
+        if req:
+            setup_job_hardlinks(platform, job_id, req)
+        
+        source_type = req.source_type if req else "image"
+        source_file_id = req.source_file_id if req else None
+        source_name = None
+        if source_file_id:
+            source_name = os.path.basename(source_file_id)
+        
+        target_type = "upload"
+        target_count = len(req.target_file_ids) if req else 0
+        target_summary = None
+        if req and req.target_file_ids:
+            first_target = os.path.basename(req.target_file_ids[0])
+            if target_count > 1:
+                target_summary = f"{first_target} +{target_count - 1} more"
+            else:
+                target_summary = first_target
+                
+        config_json = req.model_dump_json() if req else None
+        
+        record = db.create_job_record(
+            job_id=job_id,
+            platform=platform,
+            status="pending",
+            source_type=source_type,
+            source_file_id=source_file_id,
+            source_name=source_name,
+            target_type=target_type,
+            target_count=target_count,
+            target_summary=target_summary,
+            config_json=config_json
+        )
+        
         self.jobs[job_id] = {
             "id": job_id,
             "platform": platform,
             "status": "pending",
+            "source_type": source_type,
+            "source_file_id": source_file_id,
+            "source_name": source_name,
+            "target_type": target_type,
+            "target_count": target_count,
+            "target_summary": target_summary,
             "progress": 0.0,
             "frames_done": 0,
             "total_frames": 0,
             "preview_image": None,
             "output_path": None,
-            "error": None
+            "error": None,
+            "created_at": record.get("created_at")
         }
         self.cancel_events[job_id] = threading.Event()
         self.save_jobs(force=True)
         return job_id
 
-    def update_job(self, job_id: str, updates: Dict[str, Any]):
-        if job_id in self.jobs:
-            self.jobs[job_id].update(updates)
-            # Force immediate save when important fields change; debounce progress-only updates
-            force = bool(self._IMMEDIATE_SAVE_KEYS & updates.keys())
-            self.save_jobs(force=force)
+    def update_job(self, job_id: str, updates: Dict[str, Any], force: bool = False):
+        if not hasattr(self, "_last_save_time"):
+            self._last_save_time = 0.0
+        if not hasattr(self, "_save_lock"):
+            self._save_lock = threading.Lock()
             
-    def get_job(self, job_id: str) -> Optional[Dict[str, Any]]:
-        return self.jobs.get(job_id)
+        if job_id not in self.jobs:
+            job_rec = db.get_job_record(job_id)
+            if job_rec:
+                self.jobs[job_id] = dict(job_rec)
+                self.jobs[job_id]["preview_image"] = None
+            else:
+                self.jobs[job_id] = {"id": job_id}
+                
+        self.jobs[job_id].update(updates)
         
+        # Prepare DB updates (exclude preview_image to keep SQLite fast and lightweight)
+        db_updates = {k: v for k, v in updates.items() if k != "preview_image"}
+        should_force = force or bool(self._IMMEDIATE_SAVE_KEYS & updates.keys())
+        now = time.monotonic()
+        
+        if db_updates and (should_force or (now - self._last_save_time) >= self._SAVE_DEBOUNCE_SECS):
+            try:
+                db.update_job_record(job_id, db_updates)
+                self._last_save_time = now
+            except Exception as e:
+                logger.debug(f"DB update error: {e}")
+                
+        self.save_jobs(force=should_force)
+
+    def get_job(self, job_id: str) -> Optional[Dict[str, Any]]:
+        in_mem = self.jobs.get(job_id)
+        if in_mem and in_mem.get("status"):
+            return in_mem
+        record = db.get_job_record(job_id)
+        if record:
+            self.jobs[job_id] = dict(record)
+            if in_mem and "preview_image" in in_mem:
+                self.jobs[job_id]["preview_image"] = in_mem["preview_image"]
+            return self.jobs[job_id]
+        return None
+
     def cancel_job(self, job_id: str):
         if job_id in self.cancel_events:
             self.cancel_events[job_id].set()
-            self.update_job(job_id, {"status": "failed", "error": "Cancelled by user"})
             
+        job = db.get_job_record(job_id)
+        frames_done = 0
+        total_frames = 0
+        progress = 0.0
+        
+        if job:
+            platform = job.get("platform", "unknown")
+            ws = get_job_workspace(platform, job_id)
+            out_dir = ws["output_dir"]
+            if os.path.exists(out_dir):
+                actual_files = [f for f in os.listdir(out_dir) if os.path.isfile(os.path.join(out_dir, f)) and os.path.getsize(os.path.join(out_dir, f)) > 0]
+                frames_done = len(actual_files)
+                
+            total_frames = job.get("total_frames") or job.get("target_count") or 0
+            if total_frames > 0:
+                progress = round((frames_done / total_frames) * 100, 2)
+                
+        updates = {
+            "status": "failed",
+            "error": "Cancelled by user",
+            "frames_done": frames_done,
+            "total_frames": total_frames,
+            "progress": progress
+        }
+        self.update_job(job_id, updates, force=True)
+
+    def clean_job_temp_dir(self, job: Dict[str, Any]):
+        """Remove temp session folders and partial video files for a given job."""
+        try:
+            import shutil
+            platform = job.get("platform", "unknown")
+            _, outputs_dir = ensure_workspace(platform)
+            temp_root = os.path.join(outputs_dir, "temp")
+            
+            prefixes_to_clean = set()
+            if job.get("config_json"):
+                try:
+                    req = JobStartRequest.model_validate_json(job["config_json"])
+                    source_base = os.path.splitext(os.path.basename(req.source_file_id))[0] if req.source_file_id else ""
+                    for tid in req.target_file_ids:
+                        t_base = os.path.splitext(os.path.basename(tid))[0]
+                        prefix = f"out_{source_base[:8]}_{t_base[:8]}"
+                        prefixes_to_clean.add(prefix)
+                except Exception as e:
+                    logger.debug(f"Could not parse config_json for temp cleanup: {e}")
+
+            if job.get("output_path"):
+                out_base = os.path.splitext(os.path.basename(job["output_path"]))[0]
+                prefixes_to_clean.add(out_base)
+
+            if not prefixes_to_clean:
+                return
+
+            if os.path.exists(temp_root):
+                for folder_name in os.listdir(temp_root):
+                    folder_path = os.path.join(temp_root, folder_name)
+                    if os.path.isdir(folder_path):
+                        for pfx in prefixes_to_clean:
+                            if folder_name == pfx or folder_name.startswith(pfx):
+                                logger.info(f"Cleaning temp folder on job delete: {folder_path}")
+                                shutil.rmtree(folder_path, ignore_errors=True)
+                                break
+
+            # Also clean any partial interrupted video files in outputs_dir
+            if os.path.exists(outputs_dir):
+                for fname in os.listdir(outputs_dir):
+                    for pfx in prefixes_to_clean:
+                        if fname.startswith(f"{pfx}_") and "%" in fname and fname.endswith(".mp4"):
+                            try:
+                                os.remove(os.path.join(outputs_dir, fname))
+                            except Exception:
+                                pass
+        except Exception as e:
+            logger.error(f"Error cleaning temp files: {e}")
+
+    def delete_job(self, job_id: str) -> bool:
+        job = db.get_job_record(job_id) or self.jobs.get(job_id)
+        if job_id in self.cancel_events:
+            self.cancel_events[job_id].set()
+            del self.cancel_events[job_id]
+        if job_id in self.jobs:
+            del self.jobs[job_id]
+        if job:
+            platform = job.get("platform", "unknown")
+            cleanup_job_workspace(platform, job_id, delete_output=True)
+            self.clean_job_temp_dir(job)
+        return db.delete_job_record(job_id)
+
+    def retry_job(self, job_id: str) -> bool:
+        """Retry a failed or cancelled job in-place using the same job_id."""
+        logger.info(f"[RETRY] Processing in-place retry request for Job: {job_id}")
+        job = db.get_job_record(job_id)
+        if not job or not job.get("config_json"):
+            logger.warning(f"[RETRY] Cannot retry job {job_id}: record or config_json not found")
+            return False
+            
+        try:
+            req = JobStartRequest.model_validate_json(job["config_json"])
+            platform = job.get("platform", "unknown")
+            
+            # Always ensure skip_existing is True on retry to resume from checkpoints
+            req.skip_existing = True
+            logger.info(f"[RETRY] Loaded job config for {job_id}: {len(req.target_file_ids)} target(s), platform={platform}")
+            
+            # Ensure workspace and hardlinks exist
+            setup_job_hardlinks(platform, job_id, req)
+            logger.info(f"[RETRY] Workspace sandbox hardlinks verified for job {job_id}")
+            
+            # Reset cancel event
+            self.cancel_events[job_id] = threading.Event()
+            
+            # Count actual existing output files on disk to reflect real state immediately
+            ws = get_job_workspace(platform, job_id)
+            out_dir = ws["output_dir"]
+            actual_done = 0
+            if os.path.exists(out_dir):
+                actual_done = len([f for f in os.listdir(out_dir) if os.path.isfile(os.path.join(out_dir, f)) and os.path.getsize(os.path.join(out_dir, f)) > 0])
+                
+            total_targets = len(req.target_file_ids)
+            cur_progress = round((actual_done / total_targets) * 100, 2) if total_targets > 0 else 0.0
+            
+            # In-place update to pending, clearing error
+            updates = {
+                "status": "pending",
+                "error": None,
+                "preview_image": None,
+                "frames_done": actual_done,
+                "total_frames": total_targets,
+                "progress": cur_progress
+            }
+            self.update_job(job_id, updates, force=True)
+            logger.info(f"[RETRY] Job {job_id} status reset to 'pending' ({actual_done}/{total_targets} files verified on disk)")
+            
+            # Re-enqueue the existing job_id
+            self.job_queue.put((job_id, req, platform))
+            logger.info(f"[RETRY] Job {job_id} successfully re-enqueued for worker thread")
+            return True
+        except Exception as e:
+            logger.error(f"[RETRY] Failed to retry job {job_id}: {e}", exc_info=True)
+            return False
+
+    def rerun_job(self, job_id: str) -> Optional[str]:
+        job = db.get_job_record(job_id)
+        if not job or not job.get("config_json"):
+            return None
+        try:
+            req = JobStartRequest.model_validate_json(job["config_json"])
+            new_job_id = self.create_job(job.get("platform", "unknown"), req)
+            self.job_queue.put((new_job_id, req, job.get("platform", "unknown")))
+            return new_job_id
+        except Exception as e:
+            logger.error(f"Failed to rerun job {job_id}: {e}")
+            return None
+
     def get_active_job_for_platform(self, platform: str) -> Optional[Dict[str, Any]]:
-        # Returns the most recent pending or processing job for this platform
-        for job_id, job in reversed(self.jobs.items()):
-            if job["platform"] == platform and job["status"] in ["pending", "processing"]:
+        # Check in-memory first
+        for job_id, job in reversed(list(self.jobs.items())):
+            if job.get("platform") == platform and job.get("status") in ["pending", "processing"]:
                 return job
+        # Check DB
+        active_list = db.list_job_records(platform=platform, status="active", limit=1)
+        if active_list:
+            return active_list[0]
         return None
 
 job_manager = JobManager()
 
 def run_job_background(job_id: str, req: JobStartRequest, x_client_platform: str):
-    uploads_dir, outputs_dir = ensure_workspace(x_client_platform)
-    source_path = os.path.join(uploads_dir, req.source_file_id)
-    cancel_event = job_manager.cancel_events[job_id]
+    uploads_dir, root_outputs_dir = ensure_workspace(x_client_platform)
+    ws = ensure_job_workspace(x_client_platform, job_id)
+    setup_job_hardlinks(x_client_platform, job_id, req)
+    
+    source_dir = ws["source_dir"]
+    target_dir = ws["target_dir"]
+    job_output_dir = ws["output_dir"]
+    
+    # Resolve source path (prefer job sandbox, fallback to uploads)
+    source_path = None
+    if req.source_file_id:
+        if req.source_type == "model":
+            source_path = os.path.join(get_platform_dir(x_client_platform), req.source_file_id)
+        else:
+            cand = os.path.join(source_dir, os.path.basename(req.source_file_id))
+            source_path = cand if os.path.exists(cand) else os.path.join(uploads_dir, req.source_file_id)
+            
+    cancel_event = job_manager.cancel_events.setdefault(job_id, threading.Event())
     
     parsed_providers = None
     if req.providers:
@@ -181,11 +514,14 @@ def run_job_background(job_id: str, req: JobStartRequest, x_client_platform: str
         execution_thread_count=req.execution_thread_count,
         video_encoder=getattr(state, "video_encoder", "h264_nvenc"),
         reference_face_ids=list(req.reference_face_ids),
-        reference_threshold=req.reference_threshold
+        reference_threshold=req.reference_threshold,
+        face_detector_score=getattr(req, "face_detector_score", 0.65),
+        face_landmark_score=getattr(req, "face_landmark_score", 0.50)
     )
     
     logger.debug(f"Job {job_id} reference_face_ids: {len(job_config.reference_face_ids)}")
     logger.debug(f"Job {job_id} reference_threshold: {job_config.reference_threshold}")
+    logger.debug(f"Job {job_id} face_detector_score: {job_config.face_detector_score}, landmark_score: {job_config.face_landmark_score}")
     
     job_completed_successfully = False
     try:
@@ -198,7 +534,11 @@ def run_job_background(job_id: str, req: JobStartRequest, x_client_platform: str
             if source_img is None:
                 raise Exception("Could not read source image")
                 
-            source_faces = detect(source_img)
+            source_faces = detect(
+                source_img,
+                detector_score=job_config.face_detector_score,
+                landmark_score=job_config.face_landmark_score
+            )
             if not source_faces:
                 raise Exception("No face detected in source image")
                 
@@ -214,95 +554,146 @@ def run_job_background(job_id: str, req: JobStartRequest, x_client_platform: str
         generated_filenames = []
         last_output_path = ""
         
-        import mimetypes
-        
         for target_id in req.target_file_ids:
             if target_id.startswith("set:"):
                 target_rel_path = target_id[4:]
-                target_path = os.path.join(get_target_sets_dir(x_client_platform), target_rel_path)
+                cand = os.path.join(target_dir, os.path.basename(target_rel_path))
+                target_path = cand if os.path.exists(cand) else os.path.join(get_target_sets_dir(x_client_platform), target_rel_path)
             else:
-                target_path = os.path.join(uploads_dir, target_id)
+                cand = os.path.join(target_dir, os.path.basename(target_id))
+                target_path = cand if os.path.exists(cand) else os.path.join(uploads_dir, target_id)
                 
             target_basename = os.path.basename(target_path)
-            source_basename = os.path.basename(req.source_file_id)
-            mime_type, _ = mimetypes.guess_type(target_path)
-            is_image = mime_type and mime_type.startswith('image')
-            
-            target_name, _ = os.path.splitext(target_basename)
+            source_basename = os.path.basename(req.source_file_id) if req.source_file_id else "source"
+            is_image = is_image_path(target_path)
+            target_name, target_ext = os.path.splitext(target_basename)
             source_name, _ = os.path.splitext(source_basename)
+
+            clean_source = re.sub(r'[^a-zA-Z0-9_\-]', '_', source_name)
+            clean_target = re.sub(r'[^a-zA-Z0-9_\-]', '_', target_name)
+            target_hash = hashlib.md5(target_id.encode('utf-8')).hexdigest()[:6]
             
-            out_name = f"out_{source_name[:8]}_{target_name[:8]}"
-            if not req.skip_existing:
-                out_name += f"_{uuid.uuid4().hex[:6]}"
+            # Deterministic, unique output name per target inside outputs/<job_id>
+            out_name = f"out_{clean_source[:12]}_{clean_target[:24]}_{target_hash}"
                 
             if is_image:
-                ext = os.path.splitext(target_path)[1] or '.jpg'
+                ext = target_ext or '.jpg'
                 out_name += ext
-                out_path = os.path.join(outputs_dir, out_name)
+                out_path = os.path.join(job_output_dir, out_name)
                 image_in_paths.append(target_path)
                 image_out_paths.append(out_path)
             else:
                 if not out_name.endswith('.mp4'):
                     out_name += ".mp4"
-                out_path = os.path.join(outputs_dir, out_name)
+                out_path = os.path.join(job_output_dir, out_name)
                 video_tasks.append((target_path, out_path))
             
             generated_filenames.append(out_name)
             last_output_path = out_path
             
         job_manager.update_job(job_id, {"status": "processing"})
+        logger.info(f"[JOB {job_id}] Processing started. Total targets to evaluate: {total_targets}")
         processed_total = 0
         
         # 1. Process images via SwarmEngine
         if image_in_paths:
-            from uniface.core.image_service import process_images_swarm
-            def img_progress(current: int, total: int, frame: np.ndarray = None):
-                nonlocal processed_total
-                overall_pct = ((processed_total + current) / total_targets) * 100
-                
-                updates = {
-                    "progress": round(overall_pct, 2),
-                    "frames_done": current,
-                    "total_frames": total
-                }
-                
-                current_job = job_manager.get_job(job_id) or {}
-                preview_enabled = current_job.get("preview_enabled", req.preview_enabled)
-                preview_res = current_job.get("preview_resolution", req.preview_resolution)
-                
-                freq = max(1, req.preview_frequency)
-                if preview_enabled and frame is not None and (current == 1 or current % freq == 0 or current == total):
-                    h, w = frame.shape[:2]
-                    scale = preview_res / max(h, w)
-                    if scale < 1.0:
-                        preview_frame = cv2.resize(frame, (int(w*scale), int(h*scale)))
-                    else:
-                        preview_frame = frame
-                    _, buffer = cv2.imencode('.jpg', preview_frame, [cv2.IMWRITE_JPEG_QUALITY, 50])
-                    b64 = base64.b64encode(buffer).decode('utf-8')
-                    updates["preview_image"] = f"data:image/jpeg;base64,{b64}"
-                job_manager.update_job(job_id, updates)
-                
-            process_images_swarm(
-                source_face, 
-                image_in_paths, 
-                image_out_paths, 
-                progress_callback=img_progress, 
-                cancel_event=cancel_event,
-                job_config=job_config
-            )
-            processed_total += len(image_in_paths)
+            pending_in = []
+            pending_out = []
+            existing_out_files = set(os.listdir(job_output_dir)) if os.path.exists(job_output_dir) else set()
+            
+            for inp, outp in zip(image_in_paths, image_out_paths):
+                # Rule 3: Target is ONLY complete if its exact output file exists on disk and has size > 0
+                if req.skip_existing and os.path.exists(outp) and os.path.getsize(outp) > 0:
+                    logger.info(f"[CHECKPOINT] Output exists on disk -> Skipping: {os.path.basename(outp)}")
+                    processed_total += 1
+                else:
+                    pending_in.append(inp)
+                    pending_out.append(outp)
+
+            logger.info(f"[JOB {job_id}] Target check: {processed_total}/{len(image_in_paths)} already completed on disk, {len(pending_in)} pending to process")
+            
+            # Immediately update job with verified disk checkpoint
+            init_pct = round((processed_total / total_targets) * 100, 2) if total_targets > 0 else 0.0
+            job_manager.update_job(job_id, {
+                "frames_done": processed_total,
+                "total_frames": total_targets,
+                "progress": init_pct
+            }, force=True)
+
+            if pending_in:
+                from uniface.core.image_service import process_images_swarm
+                def img_progress(current: int, total: int, frame: np.ndarray = None):
+                    nonlocal processed_total
+                    current_done = processed_total + current
+                    overall_pct = ((current_done / total_targets) * 100) if total_targets > 0 else 100.0
+                    
+                    updates = {
+                        "progress": round(overall_pct, 2),
+                        "frames_done": current_done,
+                        "total_frames": total_targets
+                    }
+                    if current <= len(pending_out):
+                        updates["output_path"] = pending_out[current - 1]
+                    
+                    current_job = job_manager.get_job(job_id) or {}
+                    preview_enabled = current_job.get("preview_enabled", req.preview_enabled)
+                    preview_res = current_job.get("preview_resolution", req.preview_resolution)
+                    
+                    freq = max(1, req.preview_frequency)
+                    if preview_enabled and frame is not None and (current == 1 or current % freq == 0 or current == total):
+                        h, w = frame.shape[:2]
+                        scale = preview_res / max(h, w)
+                        if scale < 1.0:
+                            preview_frame = cv2.resize(frame, (int(w*scale), int(h*scale)))
+                        else:
+                            preview_frame = frame
+                        _, buffer = cv2.imencode('.jpg', preview_frame, [cv2.IMWRITE_JPEG_QUALITY, 50])
+                        b64 = base64.b64encode(buffer).decode('utf-8')
+                        updates["preview_image"] = f"data:image/jpeg;base64,{b64}"
+                    job_manager.update_job(job_id, updates, force=True)
+                    
+                process_images_swarm(
+                    source_face, 
+                    pending_in, 
+                    pending_out, 
+                    progress_callback=img_progress, 
+                    cancel_event=cancel_event,
+                    job_config=job_config
+                )
+                if not cancel_event.is_set():
+                    processed_total += len(pending_in)
+            else:
+                initial_pct = (processed_total / total_targets * 100) if total_targets > 0 else 100.0
+                job_manager.update_job(job_id, {
+                    "progress": round(initial_pct, 2),
+                    "frames_done": processed_total,
+                    "total_frames": total_targets
+                })
 
         # 2. Process videos sequentially
         for v_in, v_out in video_tasks:
             if cancel_event.is_set():
                 break
                 
+            v_basename = os.path.splitext(os.path.basename(v_out))[0]
+            session_temp_dir = os.path.join(os.path.dirname(v_out), "temp", v_basename)
+            
+            # Skip if video output already exists, is non-empty, and temp dir was already removed (fully completed)
+            if req.skip_existing and os.path.exists(v_out) and os.path.getsize(v_out) > 0 and not os.path.exists(session_temp_dir):
+                logger.info(f"Skipping already completed video target: {v_out}")
+                processed_total += 1
+                cur_pct = (processed_total / total_targets * 100) if total_targets > 0 else 100.0
+                job_manager.update_job(job_id, {
+                    "progress": round(cur_pct, 2),
+                    "output_path": v_out
+                })
+                continue
+
             job_manager.update_job(job_id, {"output_path": v_out})
             
             def vid_progress(current: int, total: int, frame: np.ndarray = None):
                 file_pct = (current / total) if total > 0 else 0
-                overall_pct = ((processed_total + file_pct) / total_targets) * 100
+                overall_pct = (((processed_total + file_pct) / total_targets) * 100) if total_targets > 0 else 100.0
                 
                 updates = {
                     "progress": round(overall_pct, 2),
@@ -336,10 +727,46 @@ def run_job_background(job_id: str, req: JobStartRequest, x_client_platform: str
                 skip_existing=req.skip_existing,
                 job_config=job_config
             )
+            
+            if cancel_event.is_set():
+                break
+                
+            # If successfully completed, remove any leftover partial interrupted videos (e.g. out_xxx_30%.mp4)
+            v_dir, v_file = os.path.split(v_out)
+            v_stem, v_ext = os.path.splitext(v_file)
+            if os.path.exists(v_dir):
+                for fname in os.listdir(v_dir):
+                    if fname.startswith(f"{v_stem}_") and "%" in fname and fname.endswith(v_ext):
+                        try:
+                            os.remove(os.path.join(v_dir, fname))
+                        except Exception:
+                            pass
+
             processed_total += 1
                 
         if not cancel_event.is_set():
-            job_manager.update_job(job_id, {"status": "completed", "progress": 100.0, "output_path": last_output_path})
+            # Clean up ephemeral job sandbox (jobs/<job_id>)
+            cleanup_job_workspace(x_client_platform, job_id, delete_output=False)
+            
+            # Clean up temp folder inside output dir if left
+            temp_in_out = os.path.join(job_output_dir, "temp")
+            if os.path.exists(temp_in_out):
+                import shutil
+                shutil.rmtree(temp_in_out, ignore_errors=True)
+
+            final_output_path = job_output_dir
+            if os.path.exists(job_output_dir):
+                disk_files = [f for f in os.listdir(job_output_dir) if os.path.isfile(os.path.join(job_output_dir, f)) and os.path.getsize(os.path.join(job_output_dir, f)) > 0]
+                if disk_files:
+                    final_output_path = os.path.join(job_output_dir, sorted(disk_files)[-1])
+
+            job_manager.update_job(job_id, {
+                "status": "completed", 
+                "progress": 100.0, 
+                "frames_done": total_targets,
+                "total_frames": total_targets,
+                "output_path": final_output_path
+            }, force=True)
             job_completed_successfully = True
             
             # Immich Auto-Save Hook
@@ -354,7 +781,7 @@ def run_job_background(job_id: str, req: JobStartRequest, x_client_platform: str
                         is_new_album=req.immich_new_album,
                         album_name=req.immich_album,
                         tags=req.immich_tags,
-                        outputs_dir=outputs_dir
+                        outputs_dir=job_output_dir
                     )
                     
                     if result.get("success"):
@@ -399,20 +826,24 @@ def run_job_background(job_id: str, req: JobStartRequest, x_client_platform: str
         job_manager.update_job(job_id, {"status": "failed", "error": str(e)})
 
 def worker_loop():
+    logger.info("[WORKER] Background job worker loop started and listening for tasks")
     while True:
         try:
             job_id, req, x_client_platform = job_manager.job_queue.get()
+            logger.info(f"[WORKER] >>> Picked up Job {job_id} from queue (platform: {x_client_platform})")
             job = job_manager.get_job(job_id)
             
             # Skip if cancelled while in queue
             if job and job.get("status") == "failed" and job.get("error") == "Cancelled by user":
+                logger.info(f"[WORKER] Job {job_id} was cancelled while in queue. Skipping.")
                 job_manager.job_queue.task_done()
                 continue
                 
             run_job_background(job_id, req, x_client_platform)
             job_manager.job_queue.task_done()
+            logger.info(f"[WORKER] <<< Finished processing Job {job_id}")
         except Exception as e:
-            logger.error(f"Worker loop error: {e}", exc_info=True)
+            logger.error(f"[WORKER] Worker loop error: {e}", exc_info=True)
 
 # Start background worker thread
 worker_thread = threading.Thread(target=worker_loop, daemon=True)

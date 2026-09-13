@@ -31,16 +31,20 @@ def process_images_swarm(
 
     def feed_frames():
         for i, in_path in enumerate(target_in_paths):
-            if engine.abort_event.is_set():
+            if engine.abort_event.is_set() or (cancel_event and cancel_event.is_set()):
                 break
             frame = cv2.imread(in_path)
             if frame is not None:
-                engine.queues["detect"].put((str(i), source_face, frame))
+                if not engine.safe_put("detect", (str(i), source_face, frame)):
+                    break
             else:
                 logger.warning(f"Could not read image file: {in_path}")
         
         for _ in range(engine.max_workers):
-            engine.queues["detect"].put(None)
+            if engine.abort_event.is_set() or (cancel_event and cancel_event.is_set()):
+                break
+            if not engine.safe_put("detect", None):
+                break
 
     feeder_thread = threading.Thread(target=feed_frames, daemon=True)
     feeder_thread.start()
@@ -51,7 +55,7 @@ def process_images_swarm(
         
         while nones_received < engine.max_workers:
             if cancel_event and cancel_event.is_set():
-                logger.info("Image processing cancelled by user")
+                logger.info("[SWARM] Image processing cancelled by user, shutting down engine...")
                 engine.stop()
                 break
                 
@@ -88,8 +92,9 @@ def process_images_swarm(
                 
             engine.queues["out"].task_done()
             
-    feeder_thread.join()
     engine.stop()
+    if feeder_thread.is_alive():
+        feeder_thread.join(timeout=1.0)
 
 
 def get_letterbox_thumbnail(file_path: str, target_size: int = 384, quality: int = 80) -> Optional[bytes]:

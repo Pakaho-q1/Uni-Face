@@ -102,15 +102,16 @@ class FaceCompositor:
             crop_size
         )
         
-        original_crop, _ = face_math.warp_face_by_face_landmark_5(
-            original_frame, 
-            target_face.landmark_5, 
-            template, 
-            crop_size
-        )
-        
-        if swapped_crop is None or original_crop is None or affine_matrix is None:
+        if swapped_crop is None or affine_matrix is None:
             return swapped_frame
+            
+        original_crop = cv2.warpAffine(
+            original_frame, 
+            affine_matrix, 
+            crop_size, 
+            borderMode=cv2.BORDER_REPLICATE, 
+            flags=cv2.INTER_AREA
+        )
             
         matched_crop = self.conditional_match_color(original_crop, swapped_crop)
         

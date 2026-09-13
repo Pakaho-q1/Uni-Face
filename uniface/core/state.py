@@ -20,6 +20,8 @@ class StateManager:
         self.execution_thread_count = 4
         self.video_encoder = "h264_nvenc"
         self.server_port = 8000
+        self.log_level = "warning"
+        self._cli_log_level = None
         
         self.swap_model = "inswapper_128"
         self.swap_weight = 0.65
@@ -41,6 +43,8 @@ class StateManager:
         self.similarity: bool = False
         self.reference_face_ids: List[str] = []
         self.reference_threshold: float = 0.6
+        self.face_detector_score: float = 0.65
+        self.face_landmark_score: float = 0.50
         
         # Immich Settings
         self.immich_url: str = ""
@@ -50,6 +54,12 @@ class StateManager:
         self.immich_album: str = ""
         self.immich_tags: List[str] = []
         self.immich_delete_local: bool = False
+
+    def set_log_level(self, level: str):
+        from uniface.core.logging import setup_logging
+        self._cli_log_level = level.strip().lower()
+        self.log_level = self._cli_log_level
+        setup_logging(level=self.log_level)
 
     def init(self, parse_args=True):
         ini_path = ROOT_DIR / "uni-face.ini"
@@ -67,6 +77,8 @@ class StateManager:
                     self.server_port = int(config["GLOBAL"]["server_port"])
                 if "auth" in config["GLOBAL"]:
                     self.auth = config["GLOBAL"]["auth"]
+                if "log_level" in config["GLOBAL"] and not self._cli_log_level:
+                    self.log_level = config["GLOBAL"]["log_level"].strip().lower()
             if "PROCESSORS" in config:
                 p = config["PROCESSORS"]
                 if "processors" in p: self.processors = p["processors"].split()
@@ -79,6 +91,8 @@ class StateManager:
                 if "restore_model" in p: self.restore_model = p["restore_model"]
                 if "restore_weight" in p: self.restore_weight = float(p["restore_weight"])
                 if "restore_blend" in p: self.restore_blend = int(p["restore_blend"])
+                if "face_detector_score" in p: self.face_detector_score = float(p["face_detector_score"])
+                if "face_landmark_score" in p: self.face_landmark_score = float(p["face_landmark_score"])
             
             if "IMMICH" in config:
                 i = config["IMMICH"]
@@ -89,6 +103,9 @@ class StateManager:
                 if "album" in i: self.immich_album = i["album"].strip()
                 if "tags" in i: self.immich_tags = [t for t in i["tags"].split(",") if t.strip()]
                 if "delete_local" in i: self.immich_delete_local = i["delete_local"].lower() == "true"
+
+        from uniface.core.logging import setup_logging
+        setup_logging(level=self.log_level)
 
         if not parse_args:
             return
@@ -109,6 +126,11 @@ class StateManager:
         parser.add_argument("--restore_model", type=str)
         parser.add_argument("--restore_weight", type=float)
         parser.add_argument("--restore_blend", type=int)
+        parser.add_argument("--face-detector-score", "--face_detector_score", type=float, dest="face_detector_score")
+        parser.add_argument("--face-landmark-score", "--face_landmark_score", type=float, dest="face_landmark_score")
+        parser.add_argument("--log-level", choices=["debug", "info", "warning", "error"], type=str.lower)
+        parser.add_argument("--log-info", action="store_true", help="Enable INFO logging")
+        parser.add_argument("--log-debug", action="store_true", help="Enable DEBUG logging")
         
         args = parser.parse_args()
         
@@ -127,6 +149,15 @@ class StateManager:
         if args.restore_model: self.restore_model = args.restore_model
         if args.restore_weight is not None: self.restore_weight = args.restore_weight
         if args.restore_blend is not None: self.restore_blend = args.restore_blend
+        if getattr(args, "face_detector_score", None) is not None: self.face_detector_score = args.face_detector_score
+        if getattr(args, "face_landmark_score", None) is not None: self.face_landmark_score = args.face_landmark_score
+
+        if getattr(args, 'log_debug', False):
+            self.set_log_level("debug")
+        elif getattr(args, 'log_info', False):
+            self.set_log_level("info")
+        elif getattr(args, 'log_level', None):
+            self.set_log_level(args.log_level)
 
     def parse_providers(self, provider_str: str) -> list:
         mapping = {

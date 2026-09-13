@@ -2,11 +2,13 @@ import os
 import asyncio
 import hashlib
 import mimetypes
-from fastapi import APIRouter, Header, HTTPException, WebSocket, WebSocketDisconnect
+from typing import Optional
+from fastapi import APIRouter, Header, HTTPException, WebSocket, WebSocketDisconnect, Query
 from fastapi.responses import FileResponse
 
 from uniface.core.job_manager import job_manager, JobStartRequest, PreviewSettings
 from uniface.core.logging import get_logger
+from uniface.core import db
 
 logger = get_logger(__name__)
 router = APIRouter(tags=["jobs"])
@@ -16,7 +18,7 @@ async def create_job(
     req: JobStartRequest,
     x_client_platform: str = Header("unknown")
 ):
-    job_id = job_manager.create_job(x_client_platform)
+    job_id = job_manager.create_job(x_client_platform, req)
     job_manager.update_job(job_id, {
         "preview_enabled": req.preview_enabled,
         "preview_resolution": req.preview_resolution
@@ -26,6 +28,78 @@ async def create_job(
     job_manager.job_queue.put((job_id, req, x_client_platform))
     
     return {"job_id": job_id, "status": "pending"}
+
+@router.get("/api/v1/jobs")
+async def list_jobs(
+    status: Optional[str] = Query(None, description="Filter by status: active, pending, processing, completed, failed, cancelled"),
+    limit: int = Query(50, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+    x_client_platform: str = Header("unknown")
+):
+    records = db.list_job_records(platform=x_client_platform, status=status, limit=limit, offset=offset)
+    total = db.get_jobs_count(platform=x_client_platform, status=status)
+    active_count = db.get_active_jobs_count(platform=x_client_platform)
+    return {"jobs": records, "total": total, "active_count": active_count}
+
+@router.get("/api/v1/jobs/active-count")
+async def get_active_count(x_client_platform: str = Header("unknown")):
+    count = db.get_active_jobs_count(platform=x_client_platform)
+    return {"active_count": count}
+
+@router.post("/api/v1/jobs/{job_id}/rerun")
+async def rerun_job_endpoint(job_id: str):
+    new_job_id = job_manager.rerun_job(job_id)
+    if not new_job_id:
+        raise HTTPException(status_code=400, detail="Unable to rerun job. Missing config or job not found.")
+    return {"status": "enqueued", "new_job_id": new_job_id}
+
+@router.post("/api/v1/jobs/{job_id}/retry")
+async def retry_job_endpoint(job_id: str):
+    logger.info(f"[API] >>> Received retry request for Job ID: {job_id}")
+    success = job_manager.retry_job(job_id)
+    if not success:
+        logger.warning(f"[API] <<< Retry rejected for Job ID: {job_id}")
+        raise HTTPException(status_code=400, detail="Unable to retry job. Missing config or job not found.")
+    logger.info(f"[API] <<< Retry accepted for Job ID: {job_id}")
+    return {"status": "pending", "job_id": job_id}
+
+@router.get("/api/v1/jobs/debug")
+async def get_jobs_debug(x_client_platform: str = Header("unknown")):
+    from uniface.core.job_manager import worker_thread
+    recent = db.list_job_records(platform=x_client_platform, limit=5)
+    return {
+        "worker_thread_alive": worker_thread.is_alive() if worker_thread else False,
+        "job_queue_size": job_manager.job_queue.qsize(),
+        "active_cancel_events": list(job_manager.cancel_events.keys()),
+        "recent_jobs": [
+            {
+                "id": j.get("id"),
+                "status": j.get("status"),
+                "progress": j.get("progress"),
+                "error": j.get("error"),
+                "frames_done": j.get("frames_done"),
+                "total_frames": j.get("total_frames"),
+                "target_count": j.get("target_count")
+            } for j in recent
+        ]
+    }
+
+@router.delete("/api/v1/jobs/{job_id}")
+async def delete_single_job(job_id: str):
+    success = job_manager.delete_job(job_id)
+    if not success:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return {"status": "deleted", "job_id": job_id}
+
+@router.delete("/api/v1/jobs")
+async def clear_completed_jobs(x_client_platform: str = Header("unknown")):
+    # Clean temp folders for finished/cancelled jobs
+    records = db.list_job_records(platform=x_client_platform, limit=1000)
+    for r in records:
+        if r.get("status") in ['completed', 'failed', 'cancelled']:
+            job_manager.clean_job_temp_dir(r)
+    cleared = db.clear_completed_job_records(platform=x_client_platform)
+    return {"status": "cleared", "count": cleared}
 
 @router.post("/api/v1/jobs/{job_id}/preview")
 async def update_preview_settings(job_id: str, settings: PreviewSettings):
@@ -112,7 +186,7 @@ async def websocket_job_status(websocket: WebSocket, job_id: str):
                 
             await websocket.send_json(resp)
             
-            if job["status"] in ["completed", "failed"]:
+            if job["status"] in ["completed", "failed", "cancelled"]:
                 break
                 
             await asyncio.sleep(0.5)

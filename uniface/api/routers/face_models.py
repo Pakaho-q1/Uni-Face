@@ -78,6 +78,21 @@ async def build_face_model(
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+def _sample_faces_from_video(video_path: str, sample_count: int, add_faces_fn):
+    cap = cv2.VideoCapture(video_path)
+    try:
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        if total_frames > 0:
+            num_samples = min(sample_count, total_frames)
+            frame_indices = np.random.choice(total_frames, num_samples, replace=False)
+            for frame_idx in frame_indices:
+                cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+                ret, frame = cap.read()
+                if ret:
+                    add_faces_fn(frame, sample_count)
+    finally:
+        cap.release()
+
 @router.post("/api/v1/extract-faces")
 async def extract_faces(
     x_client_platform: str = Header("unknown"),
@@ -137,19 +152,7 @@ async def extract_faces(
                     with open(temp_path, "wb") as f:
                         f.write(await uf.read())
                     try:
-                        cap = cv2.VideoCapture(temp_path)
-                        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-                        if total_frames > 0:
-                            num_samples = min(sample_count, total_frames)
-                            frame_indices = np.random.choice(total_frames, num_samples, replace=False)
-                            for frame_idx in frame_indices:
-                                cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
-                                ret, frame = cap.read()
-                                if ret:
-                                    add_faces_from_image(frame, sample_count)
-                                    if len(extracted_faces) >= sample_count:
-                                        break
-                        cap.release()
+                        _sample_faces_from_video(temp_path, sample_count, add_faces_from_image)
                     finally:
                         if os.path.exists(temp_path):
                             os.remove(temp_path)
@@ -173,19 +176,7 @@ async def extract_faces(
                     import mimetypes
                     mt, _ = mimetypes.guess_type(path)
                     if mt and mt.startswith('video'):
-                        cap = cv2.VideoCapture(path)
-                        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-                        if total_frames > 0:
-                            num_samples = min(sample_count, total_frames)
-                            frame_indices = np.random.choice(total_frames, num_samples, replace=False)
-                            for frame_idx in frame_indices:
-                                cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
-                                ret, frame = cap.read()
-                                if ret:
-                                    add_faces_from_image(frame, sample_count)
-                                    if len(extracted_faces) >= sample_count:
-                                        break
-                        cap.release()
+                        _sample_faces_from_video(path, sample_count, add_faces_from_image)
                     else:
                         img = cv2.imread(path)
                         if img is not None:

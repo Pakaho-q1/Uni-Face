@@ -35,6 +35,8 @@ export interface JobStartSettings {
   skip_existing: boolean;
   reference_face_ids: string[];
   reference_threshold: number;
+  face_detector_score?: number;
+  face_landmark_score?: number;
   
   // Immich settings
   immich_url?: string;
@@ -151,6 +153,10 @@ export interface SettingsState {
   setHashChunkSize: (v: number[]) => void;
   scanSampleCount: number[];
   setScanSampleCount: (v: number[]) => void;
+  faceDetectorScore: number[];
+  setFaceDetectorScore: (v: number[]) => void;
+  faceLandmarkScore: number[];
+  setFaceLandmarkScore: (v: number[]) => void;
   
   // Immich Settings
   immichUrl: string;
@@ -170,3 +176,30 @@ export interface SettingsState {
   immichDeleteLocal: boolean;
   setImmichDeleteLocal: (v: boolean) => void;
 }
+
+export interface JobRecord {
+  id: string;
+  platform: string;
+  status: 'pending' | 'processing' | 'completed' | 'failed' | 'cancelled';
+  source_type: 'image' | 'model';
+  source_file_id?: string;
+  source_name?: string;
+  target_type?: string;
+  target_count: number;
+  target_summary?: string;
+  progress: number;
+  frames_done: number;
+  total_frames: number;
+  output_path?: string;
+  error?: string;
+  config_json?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface JobListResponse {
+  jobs: JobRecord[];
+  total: number;
+  active_count: number;
+}
+

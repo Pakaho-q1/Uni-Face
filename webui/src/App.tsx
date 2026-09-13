@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { toast, Toaster } from 'sonner';
 import { TopNav } from '@/components/layout/TopNav';
 import { HistorySidebar } from '@/components/layout/HistorySidebar';
@@ -9,6 +9,7 @@ import { ModelBuilderDialog } from '@/components/stage/ModelBuilderDialog';
 import { TargetSetManager } from '@/components/stage/TargetSetManager';
 import { ImmichTargetManager } from '@/components/stage/ImmichTargetManager';
 import { ReferenceFaceSelector } from '@/components/stage/ReferenceFaceSelector';
+import { JobManagerDialog } from '@/components/stage/JobManagerDialog';
 import { useSettings } from '@/hooks/useSettings';
 import { useHistory } from '@/hooks/useHistory';
 import { useJobManager } from '@/hooks/useJobManager';
@@ -39,13 +40,27 @@ export default function App() {
   const [referenceFaces, setReferenceFaces] = useState<ExtractedFace[]>([]);
   const [referenceThreshold, setReferenceThreshold] = useState<number>(0.6);
 
+  const [jobManagerOpen, setJobManagerOpen] = useState(false);
+  const [activeJobCount, setActiveJobCount] = useState(0);
+
   const sourcePreviewUrlRef = useRef<string>('');
   const targetPreviewUrlRef = useRef<string>('');
 
   const settings = useSettings();
   const historyManager = useHistory();
+  
+  const updateActiveCount = useCallback(async () => {
+    try {
+      const count = await api.getActiveJobsCount();
+      setActiveJobCount(count);
+    } catch {
+      // ignore
+    }
+  }, []);
+
   const jobManager = useJobManager(() => {
     historyManager.fetchHistory(0, false);
+    updateActiveCount();
   });
 
   const fetchModels = async () => {
@@ -62,15 +77,21 @@ export default function App() {
     historyManager.fetchHistory(0, false);
     jobManager.checkActiveJob();
     fetchModels();
+    updateActiveCount();
+    const countInterval = setInterval(updateActiveCount, 3000);
+    return () => clearInterval(countInterval);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [updateActiveCount]);
+
+  const { currentJobId, running } = jobManager.jobState;
+  const { updatePreviewSettings } = jobManager;
 
   // Sync dynamic preview settings with backend
   useEffect(() => {
-    if (jobManager.jobState.currentJobId && jobManager.jobState.running) {
-      jobManager.updatePreviewSettings(previewVisible, parseInt(settings.previewRes, 10));
+    if (currentJobId && running) {
+      updatePreviewSettings(previewVisible, parseInt(settings.previewRes, 10));
     }
-  }, [previewVisible, settings.previewRes, jobManager]);
+  }, [previewVisible, settings.previewRes, currentJobId, running, updatePreviewSettings]);
 
   const handleSourceChange = (file: File) => {
     if (sourcePreviewUrlRef.current) {
@@ -136,6 +157,8 @@ export default function App() {
         skip_existing: settings.skipExisting,
         reference_face_ids: referenceFaces.map(f => f.id),
         reference_threshold: referenceThreshold,
+        face_detector_score: settings.faceDetectorScore[0] / 100,
+        face_landmark_score: settings.faceLandmarkScore[0] / 100,
         
         immich_url: settings.immichUrl,
         immich_api_key: settings.immichApiKey,
@@ -170,6 +193,8 @@ export default function App() {
         rightOpen={rightOpen} 
         toggleLeft={toggleLeft} 
         toggleRight={toggleRight} 
+        openJobManager={() => setJobManagerOpen(true)}
+        activeJobCount={Math.max(activeJobCount, jobManager.jobState.running ? 1 : 0)}
       />
 
       <div className="flex-1 flex overflow-hidden relative">
@@ -280,6 +305,15 @@ export default function App() {
           onConfirm={(faces, threshold) => {
             setReferenceFaces(faces);
             setReferenceThreshold(threshold);
+          }}
+        />
+
+        <JobManagerDialog
+          open={jobManagerOpen}
+          onOpenChange={setJobManagerOpen}
+          onJobStarted={() => {
+            jobManager.checkActiveJob();
+            updateActiveCount();
           }}
         />
       </div>

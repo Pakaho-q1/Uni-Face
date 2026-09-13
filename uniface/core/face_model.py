@@ -38,16 +38,10 @@ def load_face_model(name: str, workspace_dir: str) -> dict:
     Returns:
         dict containing the 'embeddings' tensor
     """
-    filepath = os.path.join(workspace_dir, "face_models", f"{name}.safetensors")
+    clean_name = name if name.endswith(".safetensors") else f"{name}.safetensors"
+    filepath = os.path.join(workspace_dir, "face_models", clean_name)
     if not os.path.exists(filepath):
-        # Allow checking if user passed .safetensors in name
-        if name.endswith(".safetensors"):
-            filepath = os.path.join(workspace_dir, "face_models", name)
-        else:
-            filepath = os.path.join(workspace_dir, "face_models", f"{name}.safetensors")
-            
-        if not os.path.exists(filepath):
-            raise FileNotFoundError(f"Face model {name} not found at {filepath}")
+        raise FileNotFoundError(f"Face model {name} not found at {filepath}")
             
     tensors = load_file(filepath)
     return tensors

@@ -72,7 +72,21 @@ class FaceService:
         cfg = job_config or JobConfig.from_state(state)
         
         # 1. Detect Target Faces
-        target_faces = detect(target_img)
+        need_gender = getattr(cfg, "target_gender", "all") != "all"
+        need_ref = bool(getattr(cfg, "reference_face_ids", None))
+        need_embedding = need_ref or (isinstance(source, dict) and "embeddings" in source)
+        need_gender_age = need_gender
+        
+        det_score = getattr(cfg, "face_detector_score", 0.65)
+        lm_score = getattr(cfg, "face_landmark_score", 0.50)
+        
+        target_faces = detect(
+            target_img,
+            extract_embedding=need_embedding,
+            extract_gender_age=need_gender_age,
+            detector_score=det_score,
+            landmark_score=lm_score
+        )
         if not target_faces:
             if verbose:
                 logger.debug("No face detected in target image.")
@@ -81,47 +95,29 @@ class FaceService:
         target_face = None
         
         # Reference Face Filtering
-        if cfg.reference_face_ids:
-            ref_embs = []
-            for b64_emb in cfg.reference_face_ids:
-                try:
-                    emb_bytes = base64.b64decode(b64_emb)
-                    emb = np.frombuffer(emb_bytes, dtype=np.float32)
-                    ref_embs.append(emb / (np.linalg.norm(emb) + 1e-8))
-                except Exception as e:
-                    logger.warning(f"Failed to decode reference face embedding: {e}")
+        ref_embs = cfg.get_reference_embeddings() if hasattr(cfg, "get_reference_embeddings") else []
+        if ref_embs:
+            best_sim = -1.0
+            best_face = None
+            
+            for face in target_faces:
+                if face.embedding is None:
                     continue
-                    
-            if ref_embs:
-                best_sim = -1.0
-                best_face = None
+                face_norm = face.embedding / (np.linalg.norm(face.embedding) + 1e-8)
                 
-                for face in target_faces:
-                    if face.embedding is None:
-                        continue
-                    face_norm = face.embedding / (np.linalg.norm(face.embedding) + 1e-8)
-                    
-                    for ref_emb in ref_embs:
-                        sim = float(np.dot(face_norm, ref_emb))
-                        if sim > best_sim:
-                            best_sim = sim
-                            best_face = face
-                
-                # Check threshold
-                threshold = cfg.reference_threshold
-                if best_face is not None and best_sim >= threshold:
-                    target_face = best_face
-                else:
-                    logger.debug(f"Best face match similarity ({best_sim:.3f}) below threshold ({threshold:.3f})")
-                    return None, None
+                for ref_emb in ref_embs:
+                    sim = float(np.dot(face_norm, ref_emb))
+                    if sim > best_sim:
+                        best_sim = sim
+                        best_face = face
+            
+            # Check threshold
+            threshold = cfg.reference_threshold
+            if best_face is not None and best_sim >= threshold:
+                target_face = best_face
             else:
-                # Fallback if parsing failed
-                sorted_faces = filter_and_sort_target_faces(
-                    target_faces, 
-                    gender_filter=getattr(cfg, "target_gender", "all"), 
-                    face_order=getattr(cfg, "face_order", "largest")
-                )
-                target_face = sorted_faces[0] if sorted_faces else None
+                logger.debug(f"Best face match similarity ({best_sim:.3f}) below threshold ({threshold:.3f})")
+                return None, None
                 
         if not target_face:
             # Sort & filter target faces based on gender and order strategy
@@ -134,7 +130,13 @@ class FaceService:
         
         # 2. Get/Detect Source Face
         if isinstance(source, np.ndarray):
-            source_faces = detect(source)
+            source_faces = detect(
+                source,
+                extract_embedding=True,
+                extract_gender_age=False,
+                detector_score=det_score,
+                landmark_score=lm_score
+            )
             if not source_faces:
                 if verbose:
                     logger.debug("No face detected in source image.")

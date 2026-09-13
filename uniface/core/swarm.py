@@ -50,6 +50,16 @@ class SwarmEngine:
         self.threads: List[threading.Thread] = []
         self.processors = self.config.processors.copy()
 
+    def safe_put(self, q_name: str, item: Any, timeout: float = 0.2) -> bool:
+        """Puts item into specified queue without hanging forever if abort_event is set."""
+        while not self.abort_event.is_set():
+            try:
+                self.queues[q_name].put(item, timeout=timeout)
+                return True
+            except queue.Full:
+                continue
+        return False
+
     def wait_for_slot(self, stage: str) -> bool:
         with self.slot_cond:
             while True:
@@ -250,6 +260,14 @@ class SwarmEngine:
         self.abort_event.set()
         with self.slot_cond:
             self.slot_cond.notify_all()
+        # Drain all queues so that any threads waiting on put() or get() unblock instantly
+        for q in self.queues.values():
+            try:
+                while not q.empty():
+                    q.get_nowait()
+                    q.task_done()
+            except Exception:
+                pass
         for t in self.threads:
             if t.is_alive():
-                t.join(timeout=1.0)
+                t.join(timeout=0.5)

@@ -6,12 +6,18 @@ export const ENDPOINTS = {
   // Jobs
   JOBS: '/api/v1/jobs',
   ACTIVE_JOB: '/api/v1/jobs/active',
+  ACTIVE_JOB_COUNT: '/api/v1/jobs/active-count',
   JOB_WS: (jobId: string) => `/api/v1/ws/jobs/${jobId}`,
   JOB_CANCEL: (jobId: string) => `/api/v1/jobs/${jobId}/cancel`,
+  JOB_DELETE: (jobId: string) => `/api/v1/jobs/${jobId}`,
+  JOB_RERUN: (jobId: string) => `/api/v1/jobs/${jobId}/rerun`,
+  JOB_RETRY: (jobId: string) => `/api/v1/jobs/${jobId}/retry`,
+  JOBS_CLEAR: '/api/v1/jobs',
   JOB_PREVIEW: (jobId: string) => `/api/v1/jobs/${jobId}/preview`,
 
   // Upload & Workspace
   UPLOAD: '/api/v1/upload',
+  UPLOAD_FILE: (filePath: string) => `/api/v1/uploads/${filePath}`,
   EXTRACT_FACES: '/api/v1/extract-faces',
   CLEAR_TEMP_WORKSPACE: '/api/v1/workspace/clear-temp',
 

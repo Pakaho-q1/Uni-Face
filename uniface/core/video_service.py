@@ -177,16 +177,20 @@ def process_video(
                 # Feeder thread
                 def feed_frames():
                     for frame_file in pending_frames:
-                        if engine.abort_event.is_set():
+                        if engine.abort_event.is_set() or (cancel_event and cancel_event.is_set()):
                             break
                         in_path = os.path.join(temp_frames_in_dir, frame_file)
                         if os.path.exists(in_path):
                             frame = cv2.imread(in_path)
                             if frame is not None:
-                                engine.queues["detect"].put((frame_file, source_face, frame))
+                                if not engine.safe_put("detect", (frame_file, source_face, frame)):
+                                    break
                     # Poison pills to shut down all detect workers
                     for _ in range(engine.max_workers):
-                        engine.queues["detect"].put(None)
+                        if engine.abort_event.is_set() or (cancel_event and cancel_event.is_set()):
+                            break
+                        if not engine.safe_put("detect", None):
+                            break
 
                 feeder_thread = threading.Thread(target=feed_frames, daemon=True)
                 feeder_thread.start()
@@ -229,13 +233,16 @@ def process_video(
                                 
                         engine.queues["out"].task_done()
                         
-                feeder_thread.join()
                 engine.stop()
+                if feeder_thread.is_alive():
+                    feeder_thread.join(timeout=1.0)
                 
             except KeyboardInterrupt:
                 interrupted = True
                 if 'engine' in locals():
                     engine.stop()
+                if 'feeder_thread' in locals() and feeder_thread.is_alive():
+                    feeder_thread.join(timeout=1.0)
                 logger.warning("Processing interrupted by user. Generating partial video...")
                 
         # 5. Merge audio and video

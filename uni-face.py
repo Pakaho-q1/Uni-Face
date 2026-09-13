@@ -1,7 +1,6 @@
 import cv2
 import sys
 import os
-import sys
 
 # --- TRT Support: Auto-inject TensorRT libs into PATH ---
 if sys.platform == 'win32':
@@ -44,11 +43,25 @@ if len(sys.argv) > 1:
         import uvicorn
         serve_parser = argparse.ArgumentParser(prog=f"uni-face.py {cmd}")
         serve_parser.add_argument("--port", type=int, default=state.server_port, help="Port to run the API server on")
+        serve_parser.add_argument("--log-level", choices=["debug", "info", "warning", "error"], type=str.lower, default=None, help="Set logging level (debug, info, warning, error)")
+        serve_parser.add_argument("--log-info", action="store_true", help="Enable INFO logging")
+        serve_parser.add_argument("--log-debug", action="store_true", help="Enable DEBUG logging")
         serve_args = serve_parser.parse_args(sys.argv[2:])
         
+        if serve_args.log_debug:
+            chosen_level = "debug"
+        elif serve_args.log_info:
+            chosen_level = "info"
+        elif serve_args.log_level:
+            chosen_level = serve_args.log_level
+        else:
+            chosen_level = getattr(state, "log_level", "warning")
+            
+        state.set_log_level(chosen_level)
+        
         # Start the real FastAPI server with the WebUI
-        print(f"Starting Uni-Face WebUI on port {serve_args.port}...")
-        uvicorn.run("uniface.api_server:app", host="0.0.0.0", port=serve_args.port, reload=False)
+        print(f"Starting Uni-Face WebUI on port {serve_args.port}... [Log Level: {chosen_level.upper()}]")
+        uvicorn.run("uniface.api_server:app", host="0.0.0.0", port=serve_args.port, reload=False, log_level=chosen_level)
         sys.exit(0)
 # ----------------------
 

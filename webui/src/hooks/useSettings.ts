@@ -95,6 +95,14 @@ export function useSettings(): SettingsState {
     [DEFAULT_SETTINGS.scanSampleCount], 
     'setting_scanSampleCount'
   );
+  const [faceDetectorScore, setFaceDetectorScore] = useStickyState(
+    [DEFAULT_SETTINGS.faceDetectorScore], 
+    'setting_faceDetectorScore'
+  );
+  const [faceLandmarkScore, setFaceLandmarkScore] = useStickyState(
+    [DEFAULT_SETTINGS.faceLandmarkScore], 
+    'setting_faceLandmarkScore'
+  );
 
   // Immich Settings
   const [immichUrl, setImmichUrl] = useStickyState(
@@ -153,6 +161,8 @@ export function useSettings(): SettingsState {
     skipExisting, setSkipExisting,
     hashChunkSize, setHashChunkSize,
     scanSampleCount, setScanSampleCount,
+    faceDetectorScore, setFaceDetectorScore,
+    faceLandmarkScore, setFaceLandmarkScore,
     immichUrl, setImmichUrl,
     immichApiKey, setImmichApiKey,
     immichLocalPath, setImmichLocalPath,

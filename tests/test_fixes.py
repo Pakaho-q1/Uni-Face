@@ -222,5 +222,33 @@ class TestProviderParsing(unittest.TestCase):
         self.assertNotIn(None, p_cuda)
         self.assertEqual(p_cuda[0][0], "CUDAExecutionProvider")
 
+# -- Code Audit: Test Cached Embeddings & Face Model Loader --
+class TestCodeAuditOptimizations(unittest.TestCase):
+    def test_job_config_cached_embeddings(self):
+        import base64
+        import numpy as np
+        from uniface.core.types import JobConfig
+        # Create a dummy 512-dim embedding
+        raw_emb = np.ones(512, dtype=np.float32)
+        b64_str = base64.b64encode(raw_emb.tobytes()).decode('utf-8')
+        
+        cfg = JobConfig(reference_face_ids=[b64_str])
+        embs1 = cfg.get_reference_embeddings()
+        self.assertEqual(len(embs1), 1)
+        self.assertAlmostEqual(float(np.linalg.norm(embs1[0])), 1.0, places=4)
+        
+        # Second call must return the exact same cached object in memory
+        embs2 = cfg.get_reference_embeddings()
+        self.assertIs(embs1, embs2)
+
+    def test_face_model_load_safetensors_extension_handling(self):
+        from uniface.core.face_model import load_face_model
+        with tempfile.TemporaryDirectory() as tmp:
+            # Must raise FileNotFoundError without redundant extension nesting
+            with self.assertRaises(FileNotFoundError) as ctx:
+                load_face_model("nonexistent_model.safetensors", tmp)
+            self.assertIn("nonexistent_model.safetensors", str(ctx.exception))
+            self.assertNotIn(".safetensors.safetensors", str(ctx.exception))
+
 if __name__ == '__main__':
     unittest.main(verbosity=2)

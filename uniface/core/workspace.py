@@ -61,3 +61,57 @@ def clear_temp_uploads(platform: str) -> dict:
         "reclaimed_bytes": reclaimed_bytes
     }
 
+def get_jobs_dir(platform: str) -> str:
+    p_dir = get_platform_dir(platform)
+    jobs_dir = os.path.join(p_dir, "jobs")
+    os.makedirs(jobs_dir, exist_ok=True)
+    return jobs_dir
+
+def get_job_workspace(platform: str, job_id: str) -> dict:
+    p_dir = get_platform_dir(platform)
+    job_dir = os.path.join(p_dir, "jobs", job_id)
+    output_dir = os.path.join(p_dir, "outputs", job_id)
+    return {
+        "job_dir": job_dir,
+        "source_dir": os.path.join(job_dir, "source"),
+        "target_dir": os.path.join(job_dir, "target"),
+        "temp_dir": os.path.join(job_dir, "temp"),
+        "output_dir": output_dir,
+    }
+
+def ensure_job_workspace(platform: str, job_id: str) -> dict:
+    ws = get_job_workspace(platform, job_id)
+    os.makedirs(ws["source_dir"], exist_ok=True)
+    os.makedirs(ws["target_dir"], exist_ok=True)
+    os.makedirs(ws["temp_dir"], exist_ok=True)
+    os.makedirs(ws["output_dir"], exist_ok=True)
+    return ws
+
+def safe_hardlink(src: str, dst: str):
+    """
+    Create a zero-copy hardlink from src to dst.
+    If dst already exists, it is left untouched.
+    Falls back to copy2 if hardlink fails (e.g. cross-volume).
+    """
+    if os.path.exists(dst):
+        return
+    os.makedirs(os.path.dirname(dst), exist_ok=True)
+    try:
+        os.link(src, dst)
+    except OSError:
+        import shutil
+        shutil.copy2(src, dst)
+
+def cleanup_job_workspace(platform: str, job_id: str, delete_output: bool = False):
+    """
+    Clean up job workspace. Always deletes ephemeral jobs/<job_id>/.
+    Optionally deletes outputs/<job_id>/ when deleting the job permanently.
+    """
+    import shutil
+    ws = get_job_workspace(platform, job_id)
+    if os.path.exists(ws["job_dir"]):
+        shutil.rmtree(ws["job_dir"], ignore_errors=True)
+    if delete_output and os.path.exists(ws["output_dir"]):
+        shutil.rmtree(ws["output_dir"], ignore_errors=True)
+
+

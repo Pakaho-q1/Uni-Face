@@ -9,7 +9,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 import io
 
-from uniface.core.workspace import ensure_workspace
+from uniface.core.workspace import ensure_workspace, safe_hardlink
 from uniface.core.immich_sync import (
     sync_to_immich, 
     test_immich_connection as sdk_test_connection,
@@ -84,15 +84,10 @@ async def import_immich_targets(
         req.local_path
     )
 
-@router.get("/api/v1/immich/thumbnail/person/{person_id}")
-async def get_person_thumbnail(
-    person_id: str, 
-    url: str = Query(...), 
-    api_key: str = Query(...)
-):
+async def _fetch_immich_thumbnail(url: str, api_key: str, subpath: str, entity_id: str) -> Response:
     try:
         base_url = _normalize_base_url(url)
-        thumb_url = f"{base_url}/api/people/{person_id}/thumbnail"
+        thumb_url = f"{base_url}/api/{subpath}/{entity_id}/thumbnail"
         req = urllib.request.Request(thumb_url, headers={"x-api-key": api_key})
         
         def fetch_bytes():
@@ -102,8 +97,16 @@ async def get_person_thumbnail(
         content = await asyncio.to_thread(fetch_bytes)
         return Response(content=content, media_type="image/jpeg")
     except Exception as e:
-        logger.debug(f"Failed to fetch person thumbnail ({person_id}): {e}")
+        logger.debug(f"Failed to fetch {subpath} thumbnail ({entity_id}): {e}")
         raise HTTPException(status_code=404, detail="Thumbnail not found")
+
+@router.get("/api/v1/immich/thumbnail/person/{person_id}")
+async def get_person_thumbnail(
+    person_id: str, 
+    url: str = Query(...), 
+    api_key: str = Query(...)
+):
+    return await _fetch_immich_thumbnail(url, api_key, "people", person_id)
 
 @router.get("/api/v1/immich/thumbnail/asset/{asset_id}")
 async def get_asset_thumbnail(
@@ -111,20 +114,7 @@ async def get_asset_thumbnail(
     url: str = Query(...), 
     api_key: str = Query(...)
 ):
-    try:
-        base_url = _normalize_base_url(url)
-        thumb_url = f"{base_url}/api/assets/{asset_id}/thumbnail"
-        req = urllib.request.Request(thumb_url, headers={"x-api-key": api_key})
-        
-        def fetch_bytes():
-            with urllib.request.urlopen(req, timeout=10.0) as resp:
-                return resp.read()
-                
-        content = await asyncio.to_thread(fetch_bytes)
-        return Response(content=content, media_type="image/jpeg")
-    except Exception as e:
-        logger.debug(f"Failed to fetch asset thumbnail ({asset_id}): {e}")
-        raise HTTPException(status_code=404, detail="Thumbnail not found")
+    return await _fetch_immich_thumbnail(url, api_key, "assets", asset_id)
 
 @router.post("/api/v1/immich/export")
 async def export_to_immich(req: ImmichExportRequest, x_client_platform: str = Header("unknown")):
@@ -140,10 +130,7 @@ async def export_to_immich(req: ImmichExportRequest, x_client_platform: str = He
         dst = os.path.join(temp_dir, fn)
         if os.path.exists(src):
             try:
-                try:
-                    os.link(src, dst)
-                except OSError:
-                    shutil.copy2(src, dst)
+                safe_hardlink(src, dst)
                 staged_filenames.append(fn)
             except Exception as e:
                 logger.warning(f"Failed to stage {fn}: {e}")

@@ -49,7 +49,7 @@ export function useJobManager(onJobComplete?: () => void) {
           } : {})
         }));
 
-        if (data.status === "completed" || data.status === "failed") {
+        if (data.status === "completed" || data.status === "failed" || data.status === "cancelled") {
           let finalPreview = '';
           if (data.status === "completed" && data.output_path) {
             const filename = data.output_path.split(/[/\\]/).pop();
@@ -57,6 +57,8 @@ export function useJobManager(onJobComplete?: () => void) {
             toast.success("Job Completed Successfully");
           } else if (data.status === "failed") {
             toast.error("Job Failed", { description: data.error || "Unknown error" });
+          } else if (data.status === "cancelled") {
+            toast.info("Job Cancelled");
           }
           
           setState(prev => ({ ...prev, running: false, targetPreview: finalPreview || prev.targetPreview }));
@@ -155,14 +157,14 @@ export function useJobManager(onJobComplete?: () => void) {
     }
   };
 
-  const updatePreviewSettings = async (enabled: boolean, resolution: number) => {
+  const updatePreviewSettings = useCallback(async (enabled: boolean, resolution: number) => {
     if (!state.currentJobId) return;
     try {
       await api.updatePreviewSettings(state.currentJobId, enabled, resolution);
     } catch (err) {
       console.error("Failed to update preview settings:", err);
     }
-  };
+  }, [state.currentJobId]);
 
   return {
     jobState: state,

@@ -1,7 +1,7 @@
 import cv2
 import numpy as np
 import onnxruntime
-from typing import List, Tuple
+from typing import List, Tuple, Optional
 
 from uniface.core.types import Face
 from uniface.core.config import MODEL_PATHS
@@ -31,36 +31,45 @@ class NativeDetector:
         
         # Configuration
         self.face_detector_size = (640, 640)
-        self.face_detector_score = 0.5
+        self.face_detector_score = 0.65
+        self.face_landmark_score = 0.50
         
         # arcface / genderage model template and size
         self.arcface_template = 'arcface_112_v2'
         self.arcface_size = (112, 112)
         self.genderage_size = (96, 96)
         
-    def detect(self, frame: np.ndarray) -> List[Face]:
-        """Detect faces, find landmarks, extract embeddings, and classify gender/age."""
+    def detect(
+        self,
+        frame: np.ndarray,
+        extract_embedding: bool = True,
+        extract_gender_age: bool = True,
+        detector_score: Optional[float] = None,
+        landmark_score: Optional[float] = None
+    ) -> List[Face]:
+        """Detect faces, find landmarks, and optionally extract embeddings and classify gender/age."""
         faces = []
         
         # 1. Detect bounding boxes and 5-point landmarks
-        bounding_boxes, face_scores, face_landmarks_5 = self._detect_yoloface(frame)
+        bounding_boxes, face_scores, face_landmarks_5 = self._detect_yoloface(frame, detector_score=detector_score)
+        min_landmark_score = landmark_score if landmark_score is not None else self.face_landmark_score
         
         for bbox, score, landmark_5 in zip(bounding_boxes, face_scores, face_landmarks_5):
             # 2. Refine with 2dfan4 to get 68-point landmarks
-            landmark_68, _ = self._detect_2dfan4(frame, bbox)
+            landmark_68, landmark_score_68 = self._detect_2dfan4(frame, bbox)
             
-            # If 2dfan4 fails or returns None, fallback to expanding the 5 points or ignore
-            if landmark_68 is None:
+            # If 2dfan4 fails or score is below threshold, filter out (reject false positives / non-faces)
+            if landmark_68 is None or landmark_score_68 < min_landmark_score:
                 continue
                 
             # Convert 68-point back to 5-point for arcface (more stable alignment)
             refined_landmark_5 = face_math.convert_to_face_landmark_5(landmark_68)
             
-            # 3. Calculate embedding using ArcFace
-            embedding = self._calculate_embedding(frame, refined_landmark_5)
+            # 3. Calculate embedding using ArcFace (optional)
+            embedding = self._calculate_embedding(frame, refined_landmark_5) if extract_embedding else None
             
-            # 4. Classify Gender & Age
-            gender, age = self._detect_gender_age(frame, refined_landmark_5)
+            # 4. Classify Gender & Age (optional)
+            gender, age = self._detect_gender_age(frame, refined_landmark_5) if extract_gender_age else (None, None)
             
             face_obj = Face(
                 bbox=bbox,
@@ -75,8 +84,9 @@ class NativeDetector:
             
         return faces
 
-    def _detect_yoloface(self, vision_frame: np.ndarray) -> Tuple[List[np.ndarray], List[float], List[np.ndarray]]:
+    def _detect_yoloface(self, vision_frame: np.ndarray, detector_score: Optional[float] = None) -> Tuple[List[np.ndarray], List[float], List[np.ndarray]]:
         """Native implementation of yoloface inference."""
+        score_threshold = detector_score if detector_score is not None else self.face_detector_score
         face_detector_width, face_detector_height = self.face_detector_size
         
         # Restrict frame (scale down if larger than 640x640 while maintaining aspect ratio)
@@ -104,7 +114,7 @@ class NativeDetector:
         detection = np.squeeze(detection).T
         
         bounding_boxes_raw, face_scores_raw, face_landmarks_5_raw = np.split(detection, [4, 5], axis=1)
-        keep_indices = np.where(face_scores_raw > self.face_detector_score)[0]
+        keep_indices = np.where(face_scores_raw > score_threshold)[0]
         
         bounding_boxes = []
         face_scores = []
@@ -132,7 +142,7 @@ class NativeDetector:
                 face_landmarks_5.append(np.array(landmark_raw_5.reshape(-1, 3)[:, :2]))
                 
             # Apply NMS
-            nms_indices = face_math.apply_nms(bounding_boxes, face_scores, self.face_detector_score, 0.4)
+            nms_indices = face_math.apply_nms(bounding_boxes, face_scores, score_threshold, 0.4)
             
             bounding_boxes = [bounding_boxes[i] for i in nms_indices]
             face_scores = [face_scores[i] for i in nms_indices]
@@ -221,10 +231,22 @@ import threading
 detector_app = None
 _lock = threading.Lock()
 
-def detect(frame: np.ndarray) -> List[Face]:
+def detect(
+    frame: np.ndarray,
+    extract_embedding: bool = True,
+    extract_gender_age: bool = True,
+    detector_score: Optional[float] = None,
+    landmark_score: Optional[float] = None
+) -> List[Face]:
     global detector_app
     if detector_app is None:
         with _lock:
             if detector_app is None:
                 detector_app = NativeDetector()
-    return detector_app.detect(frame)
+    return detector_app.detect(
+        frame,
+        extract_embedding=extract_embedding,
+        extract_gender_age=extract_gender_age,
+        detector_score=detector_score,
+        landmark_score=landmark_score
+    )

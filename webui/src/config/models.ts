@@ -14,7 +14,6 @@ export const SWAP_MODELS: ModelOption[] = [
   { id: 'hyperswap_1a_256', label: 'hyperswap_1a_256', description: 'HyperSwap 256x256 (High Quality Model A)' },
   { id: 'hyperswap_1b_256', label: 'hyperswap_1b_256', description: 'HyperSwap 256x256 (High Quality Model B)' },
   { id: 'hyperswap_1c_256', label: 'hyperswap_1c_256', description: 'HyperSwap 256x256 (High Quality Model C)' },
-  { id: 'simswap_256', label: 'simswap_256', description: 'SimSwap 256x256 High Resolution' },
 ];
 
 export const RESTORE_MODELS: ModelOption[] = [

@@ -51,5 +51,64 @@ class TestDeduplicationDB(unittest.TestCase):
         
         self.assertEqual(db.get_hash_path(file_hash), "/path1.jpg")
 
+    def test_job_crud_operations(self):
+        # 1. Create job
+        job = db.create_job_record(
+            job_id="test-job-1",
+            platform="web",
+            status="pending",
+            source_type="image",
+            source_file_id="source/123.jpg",
+            source_name="face.jpg",
+            target_type="upload",
+            target_count=2,
+            target_summary="video.mp4",
+            config_json='{"swap_model": "inswapper_128"}'
+        )
+        self.assertEqual(job["id"], "test-job-1")
+        self.assertEqual(job["status"], "pending")
+        self.assertEqual(job["source_name"], "face.jpg")
+
+        # 2. Get single job
+        fetched = db.get_job_record("test-job-1")
+        self.assertIsNotNone(fetched)
+        self.assertEqual(fetched["id"], "test-job-1")
+        self.assertEqual(fetched["config_json"], '{"swap_model": "inswapper_128"}')
+
+        # 3. Update job
+        db.update_job_record("test-job-1", {
+            "status": "processing",
+            "progress": 45.5,
+            "frames_done": 45,
+            "total_frames": 100
+        })
+        updated = db.get_job_record("test-job-1")
+        self.assertEqual(updated["status"], "processing")
+        self.assertEqual(updated["progress"], 45.5)
+
+        # 4. List jobs & active count
+        active_count = db.get_active_jobs_count("web")
+        self.assertEqual(active_count, 1)
+
+        jobs = db.list_job_records(platform="web")
+        self.assertEqual(len(jobs), 1)
+
+        # 5. Create another completed job
+        db.create_job_record(job_id="test-job-2", platform="web", status="completed")
+        self.assertEqual(db.get_jobs_count(status="completed"), 1)
+        self.assertEqual(db.get_active_jobs_count("web"), 1)
+
+        # 6. Clear completed jobs
+        cleared = db.clear_completed_job_records(platform="web")
+        self.assertEqual(cleared, 1)
+        self.assertIsNone(db.get_job_record("test-job-2"))
+        self.assertIsNotNone(db.get_job_record("test-job-1"))
+
+        # 7. Delete specific job
+        deleted = db.delete_job_record("test-job-1")
+        self.assertTrue(deleted)
+        self.assertIsNone(db.get_job_record("test-job-1"))
+
 if __name__ == '__main__':
     unittest.main()
+

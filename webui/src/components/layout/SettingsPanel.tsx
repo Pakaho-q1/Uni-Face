@@ -294,6 +294,40 @@ export function SettingsPanel({ open, onClose, settings }: SettingsPanelProps) {
               </SelectContent>
             </Select>
           </div>
+
+          {/* Face Detector Score */}
+          <div className="space-y-1.5 pt-1">
+            <div className="flex justify-between items-center">
+              <label className="text-xs text-muted-foreground">
+                Face Detection Score <span className="font-mono text-primary">{settings.faceDetectorScore[0]}%</span>
+              </label>
+            </div>
+            <Slider 
+              value={settings.faceDetectorScore} 
+              onValueChange={settings.setFaceDetectorScore} 
+              min={30} 
+              max={95} 
+              step={1} 
+            />
+            <p className="text-[10px] text-muted-foreground/80">Higher values prevent swapping onto non-face objects</p>
+          </div>
+
+          {/* Landmark Quality Score */}
+          <div className="space-y-1.5">
+            <div className="flex justify-between items-center">
+              <label className="text-xs text-muted-foreground">
+                Landmark Quality Score <span className="font-mono text-primary">{settings.faceLandmarkScore[0]}%</span>
+              </label>
+            </div>
+            <Slider 
+              value={settings.faceLandmarkScore} 
+              onValueChange={settings.setFaceLandmarkScore} 
+              min={30} 
+              max={90} 
+              step={1} 
+            />
+            <p className="text-[10px] text-muted-foreground/80">Rejects detections with distorted or weak facial landmarks</p>
+          </div>
         </div>
 
         <div className="h-px bg-border w-full" />
@@ -446,7 +480,7 @@ export function SettingsPanel({ open, onClose, settings }: SettingsPanelProps) {
               try {
                 const res = await api.clearTempWorkspace();
                 toast.success(`Cleared ${res.deleted_count} temporary files (${(res.reclaimed_bytes / (1024 * 1024)).toFixed(1)} MB reclaimed)`);
-              } catch (e: any) {
+              } catch {
                 toast.error('Failed to clear temporary workspace');
               }
             }}

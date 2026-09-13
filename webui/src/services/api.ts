@@ -15,7 +15,8 @@ import type {
   ImmichPerson,
   ImmichAsset,
   ImmichCategoryType,
-  TargetFile
+  TargetFile,
+  JobListResponse
 } from '@/types';
 
 const defaultHeaders = {
@@ -27,6 +28,76 @@ export const api = {
   async getActiveJob(): Promise<{ job_id: string | null }> {
     const res = await fetch(`${API_BASE}${ENDPOINTS.ACTIVE_JOB}`, { headers: defaultHeaders });
     if (!res.ok) return { job_id: null };
+    return res.json();
+  },
+
+  async getActiveJobsCount(): Promise<number> {
+    try {
+      const res = await fetch(`${API_BASE}${ENDPOINTS.ACTIVE_JOB_COUNT}`, { headers: defaultHeaders });
+      if (!res.ok) return 0;
+      const data = await res.json();
+      return data.active_count ?? 0;
+    } catch {
+      return 0;
+    }
+  },
+
+  async getJobs(status?: string, limit = 50, offset = 0): Promise<JobListResponse> {
+    const params = new URLSearchParams();
+    if (status && status !== 'all') params.append('status', status);
+    params.append('limit', limit.toString());
+    params.append('offset', offset.toString());
+
+    const res = await fetch(`${API_BASE}${ENDPOINTS.JOBS}?${params.toString()}`, { headers: defaultHeaders });
+    if (!res.ok) {
+      throw new Error('Failed to fetch jobs');
+    }
+    return res.json();
+  },
+
+  async deleteJob(jobId: string): Promise<void> {
+    const res = await fetch(`${API_BASE}${ENDPOINTS.JOB_DELETE(jobId)}`, {
+      method: 'DELETE',
+      headers: defaultHeaders,
+    });
+    if (!res.ok) {
+      throw new Error('Failed to delete job');
+    }
+  },
+
+  async clearCompletedJobs(): Promise<number> {
+    const res = await fetch(`${API_BASE}${ENDPOINTS.JOBS_CLEAR}`, {
+      method: 'DELETE',
+      headers: defaultHeaders,
+    });
+    if (!res.ok) {
+      throw new Error('Failed to clear completed jobs');
+    }
+    const data = await res.json();
+    return data.count ?? 0;
+  },
+
+  async rerunJob(jobId: string): Promise<{ new_job_id: string }> {
+    const res = await fetch(`${API_BASE}${ENDPOINTS.JOB_RERUN(jobId)}`, {
+      method: 'POST',
+      headers: defaultHeaders,
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: 'Failed to rerun job' }));
+      throw new Error(err.detail || 'Failed to rerun job');
+    }
+    return res.json();
+  },
+
+  async retryJob(jobId: string): Promise<{ status: string; job_id: string }> {
+    const res = await fetch(`${API_BASE}${ENDPOINTS.JOB_RETRY(jobId)}`, {
+      method: 'POST',
+      headers: defaultHeaders,
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: 'Failed to retry job' }));
+      throw new Error(err.detail || 'Failed to retry job');
+    }
     return res.json();
   },
 
