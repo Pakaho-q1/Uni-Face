@@ -45,6 +45,17 @@ class MaskParser:
             self.bisenet_session = onnxruntime.InferenceSession(str(MODEL_PATHS["bisenet_resnet_34"]), providers=self.providers, sess_options=sess_options)
             logger.debug(f"Loading Region Model: bisenet_resnet_34 (Active Providers: {self.bisenet_session.get_providers()})")
         return self.bisenet_session
+
+    def unload_bisenet(self):
+        if self.bisenet_session is not None:
+            logger.info("Unloading BiSeNet model from memory")
+            self.bisenet_session = None
+
+    def unload_xseg(self, keep_model: str = None):
+        to_del = [k for k in list(self.xseg_sessions.keys()) if k != keep_model]
+        for k in to_del:
+            logger.info(f"Unloading XSeg model {k} from memory")
+            del self.xseg_sessions[k]
         
     def create_occlusion_mask(self, crop_vision_frame: np.ndarray, model_name: str = None) -> np.ndarray:
         """
@@ -179,24 +190,137 @@ class MaskParser:
         mask = np.clip(mask, 0.0, 1.0)
         return mask
 
-    def get_combined_mask(self, temp_vision_frame: np.ndarray, crop_vision_frame: np.ndarray, mask_types: List[str] = None, target_face = None, affine_matrix = None, occlusion_model: str = None) -> np.ndarray:
+    def create_oval_mask(self, crop_shape, blur: float = 0.3) -> np.ndarray:
         """
-        Match FaceFusion exactly: dynamically reduce enabled mask types.
-        FaceFusion default is ['box'].
+        Create a natural elliptical/oval gradient mask (ReActor HyperSwap style)
+        to eliminate rectangular box cut lines.
+        """
+        h, w = crop_shape[:2]
+        mask = np.zeros((h, w), dtype=np.float32)
+        center = (w // 2, h // 2)
+        axes = (int(w * 0.38), int(h * 0.44))
+        cv2.ellipse(mask, center, axes, 0, 0, 360, 1.0, -1)
+        
+        blur_k = max(15, int(min(h, w) * blur * 0.5))
+        if blur_k % 2 == 0: blur_k += 1
+        mask = cv2.GaussianBlur(mask, (blur_k, blur_k), 0)
+        return np.clip(mask, 0.0, 1.0)
+
+    def create_target_bisenet_mask(
+        self,
+        temp_vision_frame: np.ndarray,
+        target_face,
+        affine_matrix,
+        crop_shape
+    ) -> np.ndarray:
+        """
+        ReActor formula: Segment face vs hair on the TARGET face using BiSeNet.
+        Mask values:
+          - Skin (1), Brows (2,3), Eyes (4,5), Nose (10), Mouth/Lips (11,12,13), Neck_l (15) = 1.0
+          - Background (0), Neck (14), Cloth (16), Hair (17), Hat (18) = 0.0
+        Apply double Gaussian blur (101x101, sigma 11) for ultra-soft, seamless blending with target bangs.
+        """
+        if target_face is None or not hasattr(target_face, "landmark_5") or affine_matrix is None:
+            return np.ones(crop_shape[:2], dtype=np.float32)
+            
+        from uniface.modules.utils import face_math
+        
+        # 1. Warp full frame to ffhq_512
+        model_size = (512, 512)
+        ffhq_crop, ffhq_matrix = face_math.warp_face_by_face_landmark_5(
+            temp_vision_frame, target_face.landmark_5, 'ffhq_512', model_size
+        )
+        if ffhq_crop is None or ffhq_matrix is None:
+            return np.ones(crop_shape[:2], dtype=np.float32)
+            
+        # 2. Prepare tensor for BiSeNet
+        prepare_crop = ffhq_crop[:, :, ::-1].astype(np.float32) / 255.0
+        prepare_crop = np.subtract(prepare_crop, np.array([0.485, 0.456, 0.406], dtype=np.float32))
+        prepare_crop = np.divide(prepare_crop, np.array([0.229, 0.224, 0.225], dtype=np.float32))
+        prepare_crop = np.expand_dims(prepare_crop, axis=0).transpose(0, 3, 1, 2)
+        
+        bisenet = self._get_bisenet_session()
+        pred = bisenet.run(None, {bisenet.get_inputs()[0].name: prepare_crop})[0][0]
+        class_map = pred.argmax(axis=0) # 512x512
+        
+        # Exact ReActor colormap:
+        # Skin and facial features are kept, hair (17), hat (18), cloth (16), neck (14), bg (0) are 0
+        keep_classes = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 15]
+        face_mask_512 = np.isin(class_map, keep_classes).astype(np.float32)
+        
+        # ReActor's double Gaussian blur (101, 101) with sigma 11
+        face_mask_512 = cv2.GaussianBlur(face_mask_512, (101, 101), 11)
+        face_mask_512 = cv2.GaussianBlur(face_mask_512, (101, 101), 11)
+        
+        # Remove border artifacts
+        thres = 10
+        face_mask_512[:thres, :] = 0
+        face_mask_512[-thres:, :] = 0
+        face_mask_512[:, :thres] = 0
+        face_mask_512[:, -thres:] = 0
+        
+        # 3. Project face_mask back to full frame
+        box_mask, paste_matrix = face_math.calculate_paste_area(temp_vision_frame, ffhq_crop, ffhq_matrix)
+        x1, y1, x2, y2 = box_mask
+        full_mask = np.zeros(temp_vision_frame.shape[:2], dtype=np.float32)
+        if x2 > x1 and y2 > y1 and paste_matrix is not None:
+            inverse_mask = cv2.warpAffine(face_mask_512, paste_matrix, (x2 - x1, y2 - y1), flags=cv2.INTER_LINEAR)
+            full_mask[y1:y2, x1:x2] = inverse_mask
+            
+        # 4. Project full frame mask to the target crop space (e.g. 128x128, 256x256, or 512x512)
+        crop_target_mask = cv2.warpAffine(full_mask, affine_matrix, (crop_shape[1], crop_shape[0]), flags=cv2.INTER_LINEAR)
+        return np.clip(crop_target_mask, 0.0, 1.0)
+
+    # Keep create_hair_mask for backward compatibility
+    def create_hair_mask(self, temp_vision_frame: np.ndarray, target_face, affine_matrix, crop_shape, blur: float = 0.3) -> np.ndarray:
+        return self.create_target_bisenet_mask(temp_vision_frame, target_face, affine_matrix, crop_shape)
+
+    def get_combined_mask(
+        self,
+        temp_vision_frame: np.ndarray,
+        crop_vision_frame: np.ndarray,
+        mask_types: List[str] = None,
+        target_face = None,
+        affine_matrix = None,
+        occlusion_model: str = None,
+        mask_padding: List[int] = None,
+        mask_blur: float = None,
+        clean_source_face: bool = None,
+        mask_regions: List[str] = None,
+        target_hair_protect: bool = None
+    ) -> np.ndarray:
+        """
+        Unified mask combination with ReActor-style target hair protection,
+        4-way boundary padding, optional oval mask, occlusion, and facial regions.
         """
         if mask_types is None:
             mask_types = ['box']
             
+        if mask_padding is None:
+            mask_padding = getattr(state, "mask_padding", [0, 0, 0, 0]) or [0, 0, 0, 0]
+            
+        blur_val = mask_blur if mask_blur is not None else getattr(state, "mask_blur", 0.3)
+        do_protect = target_hair_protect if target_hair_protect is not None else getattr(state, "target_hair_protect", True)
+            
         crop_masks = []
         
-        if 'box' in mask_types:
-            crop_masks.append(self.create_box_mask(crop_vision_frame))
+        # Apply oval mask if requested
+        if 'oval' in mask_types:
+            crop_masks.append(self.create_oval_mask(crop_vision_frame.shape, blur=blur_val))
+            
+        # Apply box mask if requested OR if any mask padding is specified
+        if 'box' in mask_types or any(p > 0 for p in mask_padding):
+            crop_masks.append(self.create_box_mask(crop_vision_frame, padding=mask_padding, blur=blur_val))
+            
+        # Target Hair Protection (BiSeNet Hair=0, Hat=0, 101px blur)
+        if do_protect and target_face is not None and affine_matrix is not None:
+            crop_masks.append(self.create_target_bisenet_mask(temp_vision_frame, target_face, affine_matrix, crop_vision_frame.shape))
             
         if 'occlusion' in mask_types:
             crop_masks.append(self.create_occlusion_mask(crop_vision_frame, occlusion_model))
             
         if 'region' in mask_types:
-            crop_masks.append(self.create_region_mask(temp_vision_frame, target_face, affine_matrix, crop_vision_frame.shape))
+            crop_masks.append(self.create_region_mask(temp_vision_frame, target_face, affine_matrix, crop_vision_frame.shape, regions=mask_regions))
             
         if not crop_masks:
             combined_mask = np.ones(crop_vision_frame.shape[:2], dtype=np.float32)
@@ -222,5 +346,29 @@ def get_parser() -> MaskParser:
                 parser_app = MaskParser()
     return parser_app
 
-def get_combined_mask(temp_vision_frame: np.ndarray, crop_vision_frame: np.ndarray, mask_types: List[str] = None, target_face = None, affine_matrix = None, occlusion_model: str = None) -> np.ndarray:
-    return get_parser().get_combined_mask(temp_vision_frame, crop_vision_frame, mask_types, target_face, affine_matrix, occlusion_model)
+def get_combined_mask(
+    temp_vision_frame: np.ndarray,
+    crop_vision_frame: np.ndarray,
+    mask_types: List[str] = None,
+    target_face = None,
+    affine_matrix = None,
+    occlusion_model: str = None,
+    mask_padding: List[int] = None,
+    mask_blur: float = None,
+    clean_source_face: bool = None,
+    mask_regions: List[str] = None,
+    target_hair_protect: bool = None
+) -> np.ndarray:
+    return get_parser().get_combined_mask(
+        temp_vision_frame=temp_vision_frame,
+        crop_vision_frame=crop_vision_frame,
+        mask_types=mask_types,
+        target_face=target_face,
+        affine_matrix=affine_matrix,
+        occlusion_model=occlusion_model,
+        mask_padding=mask_padding,
+        mask_blur=mask_blur,
+        clean_source_face=clean_source_face,
+        mask_regions=mask_regions,
+        target_hair_protect=target_hair_protect
+    )

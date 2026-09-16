@@ -41,6 +41,19 @@ init_db()
 
 app = FastAPI(title="Uni-Face API", version="1.0.0")
 
+# Register NumPy encoders globally to prevent jsonable_encoder TypeError
+try:
+    import numpy as np
+    from fastapi.encoders import ENCODERS_BY_TYPE
+    ENCODERS_BY_TYPE[np.bool_] = bool
+    for _int_t in (np.int8, np.int16, np.int32, np.int64, np.uint8, np.uint16, np.uint32, np.uint64):
+        ENCODERS_BY_TYPE[_int_t] = int
+    for _float_t in (np.float16, np.float32, np.float64):
+        ENCODERS_BY_TYPE[_float_t] = float
+    ENCODERS_BY_TYPE[np.ndarray] = lambda x: x.tolist()
+except ImportError:
+    pass
+
 # CORS Middleware
 app.add_middleware(
     CORSMiddleware,

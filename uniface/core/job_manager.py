@@ -70,6 +70,21 @@ class JobStartRequest(BaseModel):
     face_detector_score: float = 0.65
     face_landmark_score: float = 0.50
     
+    # Dual-Stage Swap & Staged Restore
+    stage1_restore: bool = False
+    dual_swap: bool = False
+    swap_model_2: str = "hyperswap_high_512"
+    swap_weight_2: float = 0.80
+    stage2_restore: bool = True
+    restore_model_2: str = "gfpgan_1.4"
+    restore_weight_2: float = 1.0
+    restore_blend_2: int = 100
+    
+    # Clean Source Face & Mask Padding
+    clean_source_face: bool = False
+    mask_padding: list[int] = [0, 0, 0, 0]
+    mask_blur: float = 0.3
+    
     immich_url: str = ""
     immich_api_key: str = ""
     immich_auto_save: bool = False
@@ -516,12 +531,28 @@ def run_job_background(job_id: str, req: JobStartRequest, x_client_platform: str
         reference_face_ids=list(req.reference_face_ids),
         reference_threshold=req.reference_threshold,
         face_detector_score=getattr(req, "face_detector_score", 0.65),
-        face_landmark_score=getattr(req, "face_landmark_score", 0.50)
+        face_landmark_score=getattr(req, "face_landmark_score", 0.50),
+        stage1_restore=getattr(req, "stage1_restore", False),
+        dual_swap=getattr(req, "dual_swap", False),
+        swap_model_2=getattr(req, "swap_model_2", "hyperswap_high_512"),
+        swap_weight_2=getattr(req, "swap_weight_2", 0.80),
+        stage2_restore=getattr(req, "stage2_restore", True),
+        restore_model_2=getattr(req, "restore_model_2", "gfpgan_1.4"),
+        restore_weight_2=getattr(req, "restore_weight_2", 1.0),
+        restore_blend_2=getattr(req, "restore_blend_2", 100),
+        clean_source_face=getattr(req, "clean_source_face", False),
+        mask_padding=list(getattr(req, "mask_padding", [0, 0, 0, 0])),
+        mask_blur=float(getattr(req, "mask_blur", 0.3))
     )
     
     logger.debug(f"Job {job_id} reference_face_ids: {len(job_config.reference_face_ids)}")
     logger.debug(f"Job {job_id} reference_threshold: {job_config.reference_threshold}")
     logger.debug(f"Job {job_id} face_detector_score: {job_config.face_detector_score}, landmark_score: {job_config.face_landmark_score}")
+    logger.debug(f"Job {job_id} dual_swap: {job_config.dual_swap}, stage1_restore: {job_config.stage1_restore}, stage2_restore: {job_config.stage2_restore}")
+    
+    # Unload any models that are NOT needed for this specific job to free VRAM
+    from uniface.core.model_manager import optimize_models_for_job
+    optimize_models_for_job(job_config)
     
     job_completed_successfully = False
     try:
@@ -537,7 +568,8 @@ def run_job_background(job_id: str, req: JobStartRequest, x_client_platform: str
             source_faces = detect(
                 source_img,
                 detector_score=job_config.face_detector_score,
-                landmark_score=job_config.face_landmark_score
+                landmark_score=job_config.face_landmark_score,
+                clean_source_face=getattr(job_config, "clean_source_face", False)
             )
             if not source_faces:
                 raise Exception("No face detected in source image")

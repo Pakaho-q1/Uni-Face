@@ -17,7 +17,15 @@ class BaseSwapper(ABC):
         temp_vision_frame: np.ndarray,
         swap_weight: Optional[float] = None,
         mask_types: Optional[list[str]] = None,
-        mask_regions: Optional[list[str]] = None
+        mask_regions: Optional[list[str]] = None,
+        mask_padding: Optional[list[int]] = None,
+        mask_blur: Optional[float] = None,
+        clean_source_face: Optional[bool] = None,
+        face_boost: Optional[str] = None,
+        restore_model: Optional[str] = None,
+        restore_weight: Optional[float] = None,
+        restore_blend: Optional[float] = None,
+        target_hair_protect: Optional[bool] = None
     ) -> np.ndarray:
         """
         Swap the target_face in temp_vision_frame with the source_face.

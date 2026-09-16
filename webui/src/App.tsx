@@ -10,6 +10,7 @@ import { TargetSetManager } from '@/components/stage/TargetSetManager';
 import { ImmichTargetManager } from '@/components/stage/ImmichTargetManager';
 import { ReferenceFaceSelector } from '@/components/stage/ReferenceFaceSelector';
 import { JobManagerDialog } from '@/components/stage/JobManagerDialog';
+import { FaceCleanDialog } from '@/components/stage/FaceCleanDialog';
 import { useSettings } from '@/hooks/useSettings';
 import { useHistory } from '@/hooks/useHistory';
 import { useJobManager } from '@/hooks/useJobManager';
@@ -39,6 +40,9 @@ export default function App() {
   const [referenceSelectorOpen, setReferenceSelectorOpen] = useState(false);
   const [referenceFaces, setReferenceFaces] = useState<ExtractedFace[]>([]);
   const [referenceThreshold, setReferenceThreshold] = useState<number>(0.6);
+
+  const [faceCleanOpen, setFaceCleanOpen] = useState(false);
+  const [faceCleanFile, setFaceCleanFile] = useState<File | null>(null);
 
   const [jobManagerOpen, setJobManagerOpen] = useState(false);
   const [activeJobCount, setActiveJobCount] = useState(0);
@@ -133,7 +137,7 @@ export default function App() {
       }
       
       const processors = ["swap"];
-      if (settings.faceRestore) processors.push("restore");
+      if (settings.stage1Restore || settings.stage2Restore || settings.faceRestore) processors.push("restore");
       if (settings.colorMatch) processors.push("color");
 
       const jobSettings = {
@@ -159,6 +163,20 @@ export default function App() {
         reference_threshold: referenceThreshold,
         face_detector_score: settings.faceDetectorScore[0] / 100,
         face_landmark_score: settings.faceLandmarkScore[0] / 100,
+        stage1_restore: settings.stage1Restore,
+        dual_swap: settings.dualSwap,
+        swap_model_2: settings.swapModel2,
+        swap_weight_2: settings.swapWeight2[0] / 100,
+        stage2_restore: settings.stage2Restore,
+        restore_model_2: settings.restoreModel2,
+        restore_weight_2: settings.restoreWeight2[0] / 100,
+        restore_blend_2: settings.restoreBlend2[0],
+        clean_source_face: false,
+        mask_padding: settings.enableFaceCleanTools ? settings.maskPadding : [0, 0, 0, 0],
+        mask_blur: (settings.enableFaceCleanTools ? settings.maskBlur[0] : 30) / 100,
+        face_boost: settings.faceBoost,
+        restore_source_face: settings.restoreSourceFace,
+        target_hair_protect: settings.targetHairProtect,
         
         immich_url: settings.immichUrl,
         immich_api_key: settings.immichApiKey,
@@ -235,6 +253,11 @@ export default function App() {
           onTargetTypeChange={setTargetType}
           onTargetChange={handleTargetChange}
           availableModels={availableModels}
+          enableFaceCleanTools={settings.enableFaceCleanTools}
+          onOpenFaceClean={() => {
+            setFaceCleanFile(sourceFile);
+            setFaceCleanOpen(true);
+          }}
           onOpenModelBuilder={() => setBuilderOpen(true)}
           onOpenTargetManager={() => setTargetManagerOpen(true)}
           onOpenImmichManager={() => {
@@ -269,6 +292,11 @@ export default function App() {
           open={builderOpen}
           onClose={() => setBuilderOpen(false)}
           onModelBuilt={fetchModels}
+          enableFaceCleanTools={settings.enableFaceCleanTools}
+          onOpenFaceClean={(file) => {
+            setFaceCleanFile(file);
+            setFaceCleanOpen(true);
+          }}
         />
         
         <TargetSetManager
@@ -314,6 +342,19 @@ export default function App() {
           onJobStarted={() => {
             jobManager.checkActiveJob();
             updateActiveCount();
+          }}
+        />
+
+        <FaceCleanDialog 
+          open={faceCleanOpen}
+          onOpenChange={setFaceCleanOpen}
+          file={faceCleanFile || sourceFile}
+          sourcePreviewUrl={faceCleanFile === sourceFile ? sourcePreview : undefined}
+          maskPadding={settings.maskPadding}
+          maskBlur={settings.maskBlur}
+          onSave={(padding, blur) => {
+            settings.setMaskPadding(padding);
+            settings.setMaskBlur([blur]);
           }}
         />
       </div>

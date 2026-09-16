@@ -250,5 +250,53 @@ class TestCodeAuditOptimizations(unittest.TestCase):
             self.assertIn("nonexistent_model.safetensors", str(ctx.exception))
             self.assertNotIn(".safetensors.safetensors", str(ctx.exception))
 
+    def test_numpy_bool_fastapi_serialization(self):
+        import numpy as np
+        from fastapi.encoders import jsonable_encoder
+        import uniface.api_server  # Triggers global encoder registration
+        
+        # Test serialization of numpy.bool_, numpy scalars, and response dictionaries
+        response_data = {
+            "success": True,
+            "has_forehead_hair": np.bool_(True),
+            "int_val": np.int64(10),
+            "float_val": np.float32(0.5),
+        }
+        encoded = jsonable_encoder(response_data)
+        self.assertIs(encoded["has_forehead_hair"], True)
+        self.assertEqual(encoded["int_val"], 10)
+    def test_optimize_models_for_job_and_unload(self):
+        from uniface.core.types import JobConfig
+        from uniface.core.model_manager import optimize_models_for_job, unload_all_models
+        from uniface.modules.parser import get_parser
+        from uniface.modules.swapper.swap import _swapper_cache
+        from uniface.modules.restorer import _restorer_cache
+
+        # Put dummy objects into caches
+        parser = get_parser()
+        parser.bisenet_session = "dummy_bisenet"
+        parser.xseg_sessions["xseg_1"] = "dummy_xseg"
+        _swapper_cache[("hyperswap_1a_256", "cpu")] = "dummy_swapper"
+        _restorer_cache["codeformer"] = "dummy_restorer"
+
+        # Config where neither region nor hair nor occlusion nor restore is used
+        cfg = JobConfig(
+            processors=["swap"],
+            swap_model="inswapper_128",
+            mask_types=["box"],
+            clean_source_face=False
+        )
+        optimize_models_for_job(cfg)
+
+        self.assertIsNone(parser.bisenet_session)
+        self.assertEqual(len(parser.xseg_sessions), 0)
+        self.assertEqual(len(_swapper_cache), 0)
+        self.assertEqual(len(_restorer_cache), 0)
+
+        # Also test unload_all_models
+        parser.bisenet_session = "dummy"
+        unload_all_models()
+        self.assertIsNone(parser.bisenet_session)
+
 if __name__ == '__main__':
     unittest.main(verbosity=2)

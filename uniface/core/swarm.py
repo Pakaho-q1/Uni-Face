@@ -133,9 +133,41 @@ class SwarmEngine:
                 
                 frame_idx, source_face, target_face, frame = task
                 try:
-                    res_frame = service_app.run_swap(source_face, target_face, frame.copy(), job_config=self.config)
+                    # Stage 1 Swap
+                    res_frame = service_app.run_swap(
+                        source_face, target_face, frame.copy(),
+                        swap_model=self.config.swap_model,
+                        swap_weight=self.config.swap_weight,
+                        job_config=self.config
+                    )
                     
-                    if 'restore' in self.processors:
+                    # Stage 1 Intermediate Restore (if enabled)
+                    if getattr(self.config, "stage1_restore", False):
+                        res_frame = service_app.run_restore(
+                            target_face, res_frame,
+                            restore_model=self.config.restore_model,
+                            weight=self.config.restore_weight,
+                            blend=self.config.restore_blend,
+                            job_config=self.config,
+                            verbose=False
+                        )
+                        
+                    # Stage 2 Swap (if dual_swap enabled)
+                    if getattr(self.config, "dual_swap", False):
+                        res_frame = service_app.run_swap(
+                            source_face, target_face, res_frame,
+                            swap_model=self.config.swap_model_2,
+                            swap_weight=self.config.swap_weight_2,
+                            job_config=self.config
+                        )
+                        
+                    # Determine if final restore is needed
+                    if getattr(self.config, "dual_swap", False):
+                        need_final_restore = getattr(self.config, "stage2_restore", False)
+                    else:
+                        need_final_restore = ('restore' in self.processors and not getattr(self.config, "stage1_restore", False))
+                        
+                    if need_final_restore:
                         self.queues["restore"].put((frame_idx, target_face, res_frame, frame))
                     elif 'color' in self.processors:
                         self.queues["color"].put((frame_idx, target_face, res_frame, frame))
@@ -161,7 +193,24 @@ class SwarmEngine:
                 
                 frame_idx, target_face, current_frame, orig_frame = task
                 try:
-                    res_frame = service_app.run_restore(target_face, current_frame, job_config=self.config, verbose=False)
+                    if getattr(self.config, "dual_swap", False):
+                        res_frame = service_app.run_restore(
+                            target_face, current_frame,
+                            restore_model=self.config.restore_model_2,
+                            weight=self.config.restore_weight_2,
+                            blend=self.config.restore_blend_2,
+                            job_config=self.config,
+                            verbose=False
+                        )
+                    else:
+                        res_frame = service_app.run_restore(
+                            target_face, current_frame,
+                            restore_model=self.config.restore_model,
+                            weight=self.config.restore_weight,
+                            blend=self.config.restore_blend,
+                            job_config=self.config,
+                            verbose=False
+                        )
                     if 'color' in self.processors:
                         self.queues["color"].put((frame_idx, target_face, res_frame, orig_frame))
                     else:

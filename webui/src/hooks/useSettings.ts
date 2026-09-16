@@ -104,6 +104,72 @@ export function useSettings(): SettingsState {
     'setting_faceLandmarkScore'
   );
 
+  // Dual-Stage Swap & Staged Restore Settings
+  const [stage1Restore, setStage1Restore] = useStickyState(
+    DEFAULT_SETTINGS.stage1Restore,
+    'setting_stage1Restore'
+  );
+  const [dualSwap, setDualSwap] = useStickyState(
+    DEFAULT_SETTINGS.dualSwap,
+    'setting_dualSwap'
+  );
+  const [swapModel2, setSwapModel2] = useStickyState(
+    DEFAULT_SETTINGS.swapModel2,
+    'setting_swapModel2'
+  );
+  const [swapWeight2, setSwapWeight2] = useStickyState(
+    [DEFAULT_SETTINGS.swapWeight2],
+    'setting_swapWeight2'
+  );
+  const [stage2Restore, setStage2Restore] = useStickyState(
+    DEFAULT_SETTINGS.stage2Restore,
+    'setting_stage2Restore'
+  );
+  const [restoreModel2, setRestoreModel2] = useStickyState(
+    DEFAULT_SETTINGS.restoreModel2,
+    'setting_restoreModel2'
+  );
+  const [restoreWeight2, setRestoreWeight2] = useStickyState(
+    [DEFAULT_SETTINGS.restoreWeight2],
+    'setting_restoreWeight2'
+  );
+  const [restoreBlend2, setRestoreBlend2] = useStickyState(
+    [DEFAULT_SETTINGS.restoreBlend2],
+    'setting_restoreBlend2'
+  );
+
+  // Clean Source & Mask Boundary Settings
+  const [enableFaceCleanTools, setEnableFaceCleanTools] = useStickyState<boolean>(
+    DEFAULT_SETTINGS.enableFaceCleanTools,
+    'setting_enableFaceCleanTools'
+  );
+  const [cleanSourceFace, setCleanSourceFace] = useStickyState<boolean>(
+    DEFAULT_SETTINGS.cleanSourceFace,
+    'setting_cleanSourceFace'
+  );
+  const [maskPadding, setMaskPadding] = useStickyState<number[]>(
+    DEFAULT_SETTINGS.maskPadding,
+    'setting_maskPadding'
+  );
+  const [maskBlur, setMaskBlur] = useStickyState<number[]>(
+    [DEFAULT_SETTINGS.maskBlur],
+    'setting_maskBlur'
+  );
+
+  // ReActor Logics
+  const [faceBoost, setFaceBoost] = useStickyState<string>(
+    DEFAULT_SETTINGS.faceBoost,
+    'setting_faceBoost'
+  );
+  const [restoreSourceFace, setRestoreSourceFace] = useStickyState<boolean>(
+    DEFAULT_SETTINGS.restoreSourceFace,
+    'setting_restoreSourceFace'
+  );
+  const [targetHairProtect, setTargetHairProtect] = useStickyState<boolean>(
+    DEFAULT_SETTINGS.targetHairProtect,
+    'setting_targetHairProtect'
+  );
+
   // Immich Settings
   const [immichUrl, setImmichUrl] = useStickyState(
     DEFAULT_SETTINGS.immichUrl, 
@@ -163,6 +229,21 @@ export function useSettings(): SettingsState {
     scanSampleCount, setScanSampleCount,
     faceDetectorScore, setFaceDetectorScore,
     faceLandmarkScore, setFaceLandmarkScore,
+    stage1Restore, setStage1Restore,
+    dualSwap, setDualSwap,
+    swapModel2, setSwapModel2,
+    swapWeight2, setSwapWeight2,
+    stage2Restore, setStage2Restore,
+    restoreModel2, setRestoreModel2,
+    restoreWeight2, setRestoreWeight2,
+    restoreBlend2, setRestoreBlend2,
+    enableFaceCleanTools, setEnableFaceCleanTools,
+    cleanSourceFace, setCleanSourceFace,
+    maskPadding, setMaskPadding,
+    maskBlur, setMaskBlur,
+    faceBoost, setFaceBoost,
+    restoreSourceFace, setRestoreSourceFace,
+    targetHairProtect, setTargetHairProtect,
     immichUrl, setImmichUrl,
     immichApiKey, setImmichApiKey,
     immichLocalPath, setImmichLocalPath,

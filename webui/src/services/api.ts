@@ -168,6 +168,27 @@ export const api = {
     return res.json();
   },
 
+  async cleanFacePreview(fileOrId: File | string): Promise<{
+    success: boolean;
+    has_face?: boolean;
+    has_forehead_hair?: boolean;
+    original_crop?: string;
+    hair_mask?: string | null;
+    cleaned_crop?: string;
+    error?: string;
+  }> {
+    const formData = new FormData();
+    if (typeof fileOrId === 'string') {
+      formData.append('file_id', fileOrId);
+    } else {
+      formData.append('file', fileOrId);
+    }
+    const res = await axios.post(`${API_BASE}/api/v1/face/clean-preview`, formData, {
+      headers: defaultHeaders,
+    });
+    return res.data;
+  },
+
   async clearTempWorkspace(): Promise<{ success: boolean; deleted_count: number; reclaimed_bytes: number }> {
     const res = await fetch(`${API_BASE}${ENDPOINTS.CLEAR_TEMP_WORKSPACE}`, {
       method: 'POST',
@@ -175,6 +196,17 @@ export const api = {
     });
     if (!res.ok) {
       throw new Error('Failed to clear temporary workspace');
+    }
+    return res.json();
+  },
+
+  async unloadModels(): Promise<{ status: string; message: string }> {
+    const res = await fetch(`${API_BASE}/api/v1/system/unload-models`, {
+      method: 'POST',
+      headers: defaultHeaders,
+    });
+    if (!res.ok) {
+      throw new Error('Failed to unload models');
     }
     return res.json();
   },

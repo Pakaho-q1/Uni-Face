@@ -48,7 +48,15 @@ class Hyperswap(BaseSwapper):
         temp_vision_frame: np.ndarray,
         swap_weight: Optional[float] = None,
         mask_types: Optional[List[str]] = None,
-        mask_regions: Optional[List[str]] = None
+        mask_regions: Optional[List[str]] = None,
+        mask_padding: Optional[List[int]] = None,
+        mask_blur: Optional[float] = None,
+        clean_source_face: Optional[bool] = None,
+        face_boost: Optional[str] = None,
+        restore_model: Optional[str] = None,
+        restore_weight: Optional[float] = None,
+        restore_blend: Optional[float] = None,
+        target_hair_protect: Optional[bool] = None
     ) -> np.ndarray:
         if temp_vision_frame is None:
             return temp_vision_frame
@@ -57,7 +65,7 @@ class Hyperswap(BaseSwapper):
             logger.warning("Hyperswap: Source face or embedding is None.")
             return temp_vision_frame
             
-        if target_face is None or target_face.embedding is None or not hasattr(target_face, "landmark_5") or target_face.landmark_5 is None:
+        if target_face is None or not hasattr(target_face, "landmark_5") or target_face.landmark_5 is None:
             logger.warning("Hyperswap: Target face or landmarks are None.")
             return temp_vision_frame
 
@@ -90,10 +98,12 @@ class Hyperswap(BaseSwapper):
         weight = float(np.interp(swap_weight, [0, 1], [0.35, -0.35]))
         
         source_embedding = source_face.embedding.copy().reshape(1, -1)
-        target_embedding = target_face.embedding.copy().reshape(1, -1)
-        
-        # Apply balance
-        balanced_embedding = source_embedding * (1 - weight) + target_embedding * weight
+        if getattr(target_face, "embedding", None) is not None and weight != 0:
+            target_embedding = target_face.embedding.copy().reshape(1, -1)
+            balanced_embedding = source_embedding * (1 - weight) + target_embedding * weight
+        else:
+            balanced_embedding = source_embedding
+            
         balanced_norm = np.linalg.norm(balanced_embedding)
         if balanced_norm > 0:
             source_embedding_proj = balanced_embedding / balanced_norm
@@ -113,11 +123,57 @@ class Hyperswap(BaseSwapper):
         swapped_crop = swapped_crop.clip(0, 1)
         swapped_crop = swapped_crop[:, :, ::-1] * 255.0 # RGB to BGR
         
-        # 6. Generate precise mask using Parser
+        # 6. Check Face Boost (in-crop enhancement & scaled paste-back)
+        boost_mode = face_boost or getattr(state, "face_boost", "none")
+        if boost_mode in ["256", "512"]:
+            boost_size = int(boost_mode)
+            scale = boost_size / float(self.crop_size[0])  # e.g. 512 / 256 = 2.0 or 512 / 512 = 1.0
+            
+            if scale != 1.0:
+                boosted_crop = cv2.resize(swapped_crop, (boost_size, boost_size), interpolation=cv2.INTER_CUBIC)
+            else:
+                boosted_crop = swapped_crop.copy()
+            
+            # Apply in-crop restoration if a restorer is configured
+            eff_restore_model = restore_model or getattr(state, "restore_model", "gfpgan_1.4")
+            if eff_restore_model and eff_restore_model != "none":
+                from uniface.modules.restorer import restore_crop
+                eff_weight = restore_weight if restore_weight is not None else getattr(state, "restore_weight", 1.0)
+                eff_blend = (restore_blend / 100.0) if (restore_blend is not None and restore_blend > 1.0) else (restore_blend if restore_blend is not None else getattr(state, "restore_blend", 100) / 100.0)
+                boosted_crop = restore_crop(boosted_crop, weight=eff_weight, blend=eff_blend, restore_model=eff_restore_model, providers=self.providers)
+                
+            # Scaled affine matrix (local copy, target_face.landmark_5 remains untouched!)
+            scaled_affine_matrix = affine_matrix.copy() * scale
+            
+            from uniface.modules.parser import get_combined_mask
+            crop_mask = get_combined_mask(
+                temp_vision_frame, 
+                boosted_crop, 
+                mask_types, 
+                target_face, 
+                scaled_affine_matrix, 
+                mask_padding=mask_padding, 
+                mask_blur=mask_blur, 
+                mask_regions=mask_regions,
+                target_hair_protect=target_hair_protect
+            )
+            
+            return face_math.paste_back(temp_vision_frame, boosted_crop, crop_mask, scaled_affine_matrix)
+
+        # Standard paste-back
         from uniface.modules.parser import get_combined_mask
-        crop_mask = get_combined_mask(temp_vision_frame, original_crop_vision_frame, mask_types, target_face, affine_matrix)
+        crop_mask = get_combined_mask(
+            temp_vision_frame, 
+            original_crop_vision_frame, 
+            mask_types, 
+            target_face, 
+            affine_matrix, 
+            mask_padding=mask_padding, 
+            mask_blur=mask_blur, 
+            mask_regions=mask_regions,
+            target_hair_protect=target_hair_protect
+        )
         
         # 7. Paste back
         paste_vision_frame = face_math.paste_back(temp_vision_frame, swapped_crop, crop_mask, affine_matrix)
-        
         return paste_vision_frame

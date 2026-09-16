@@ -40,6 +40,27 @@ export const DEFAULT_SETTINGS = {
   faceDetectorScore: 65,
   faceLandmarkScore: 50,
   
+  // Dual-Stage Swap & Staged Restore
+  stage1Restore: false,
+  dualSwap: false,
+  swapModel2: 'hyperswap_high_512',
+  swapWeight2: 80,
+  stage2Restore: true,
+  restoreModel2: 'gfpgan_1.4',
+  restoreWeight2: 100,
+  restoreBlend2: 100,
+  
+  // Clean Source & Mask Boundary Settings
+  enableFaceCleanTools: true,
+  cleanSourceFace: false,
+  maskPadding: [0, 0, 0, 0],
+  maskBlur: 30,
+  
+  // ReActor Logics
+  faceBoost: 'none',
+  restoreSourceFace: false,
+  targetHairProtect: true,
+  
   // Immich
   immichUrl: '',
   immichApiKey: '',

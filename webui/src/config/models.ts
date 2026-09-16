@@ -31,8 +31,15 @@ export const EXECUTION_PROVIDERS: ModelOption[] = [
   { id: 'trt', label: 'TensorRT (Fastest)' },
 ];
 
+export const FACE_BOOST_OPTIONS: ModelOption[] = [
+  { id: 'none', label: 'None (Standard 128px)' },
+  { id: '256', label: '256px (Medium Boost)' },
+  { id: '512', label: '512px (High-Res Boost)' },
+];
+
 export const MASK_TYPES: ModelOption[] = [
-  { id: 'box', label: 'Box (Default)' },
+  { id: 'box', label: 'Box (Boundary)' },
+  { id: 'oval', label: 'Oval (Smooth Ellipse)' },
   { id: 'occlusion', label: 'Occlusion (Hands, Hair)' },
   { id: 'region', label: 'Face Region Only' },
   { id: 'eyes', label: 'Priority Eyes (Force)' },

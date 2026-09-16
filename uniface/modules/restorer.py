@@ -112,6 +112,47 @@ class FaceRestorer:
         paste_vision_frame = face_math.paste_back(temp_vision_frame, enhanced_crop, crop_mask, affine_matrix)
         return paste_vision_frame
 
+    def restore_crop(
+        self,
+        crop_image: np.ndarray,
+        weight: float = 0.5,
+        blend: float = 0.8
+    ) -> np.ndarray:
+        """
+        Directly enhance an aligned face crop (used by Face Boost and Restore Source Face).
+        """
+        if crop_image is None:
+            return crop_image
+            
+        h, w = crop_image.shape[:2]
+        need_resize = (w != self.crop_size[0] or h != self.crop_size[1])
+        if need_resize:
+            input_crop = cv2.resize(crop_image, self.crop_size, interpolation=cv2.INTER_CUBIC)
+        else:
+            input_crop = crop_image
+            
+        prepare_vision_frame = input_crop[:, :, ::-1] / 255.0
+        prepare_vision_frame = (prepare_vision_frame - 0.5) / 0.5
+        prepare_vision_frame = np.expand_dims(prepare_vision_frame.transpose(2, 0, 1), axis=0).astype(np.float32)
+        
+        inputs = {self.input_name: prepare_vision_frame}
+        if self.has_weight:
+            inputs[self.weight_name] = np.array([weight], dtype=np.float64)
+            
+        enhanced_crop = self.session.run(None, inputs)[0][0]
+        enhanced_crop = np.clip(enhanced_crop, -1, 1)
+        enhanced_crop = (enhanced_crop + 1) / 2
+        enhanced_crop = enhanced_crop.transpose(1, 2, 0)
+        enhanced_crop = (enhanced_crop[:, :, ::-1] * 255.0).astype(np.uint8)
+        
+        if need_resize:
+            enhanced_crop = cv2.resize(enhanced_crop, (w, h), interpolation=cv2.INTER_CUBIC)
+            
+        if blend < 1.0:
+            enhanced_crop = cv2.addWeighted(crop_image, 1 - blend, enhanced_crop, blend, 0)
+            
+        return enhanced_crop
+
 # Thread-safe multi-model cache
 _restorer_cache: dict = {}
 _lock = threading.Lock()
@@ -123,6 +164,15 @@ def get_restorer(restore_model: Optional[str] = None, providers: Optional[List[A
             if model_key not in _restorer_cache:
                 _restorer_cache[model_key] = FaceRestorer(model_key=model_key, providers=providers)
     return _restorer_cache[model_key]
+
+def unload_unused_restorers(keep_models: List[str] = None):
+    with _lock:
+        if keep_models is None:
+            _restorer_cache.clear()
+            return
+        to_del = [k for k in list(_restorer_cache.keys()) if not any(m in k for m in keep_models)]
+        for k in to_del:
+            del _restorer_cache[k]
 
 def restore(
     target_face: Face, 
@@ -142,3 +192,18 @@ def restore(
         
     restorer_instance = get_restorer(restore_model=restore_model, providers=providers)
     return restorer_instance.restore(target_face, frame, weight, blend, mask_types=mask_types)
+
+def restore_crop(
+    crop_image: np.ndarray,
+    weight: Optional[float] = None,
+    blend: Optional[float] = None,
+    restore_model: Optional[str] = None,
+    providers: Optional[List[Any]] = None
+) -> np.ndarray:
+    if weight is None:
+        weight = getattr(state, "restore_weight", 1.0)
+    if blend is None:
+        blend = getattr(state, "restore_blend", 100) / 100.0
+    restorer_instance = get_restorer(restore_model=restore_model, providers=providers)
+    return restorer_instance.restore_crop(crop_image, weight=weight, blend=blend)
+

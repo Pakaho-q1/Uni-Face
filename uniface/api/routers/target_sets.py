@@ -257,6 +257,12 @@ async def run_garbage_collection(x_client_platform: str = Header("unknown")):
         "freed_bytes": freed_bytes
     }
 
+@router.post("/api/v1/system/unload-models")
+async def unload_models_endpoint():
+    from uniface.core.model_manager import unload_all_models
+    unload_all_models()
+    return {"status": "ok", "message": "All inactive model sessions unloaded from memory"}
+
 @router.post("/api/v1/target-sets/{set_name}/delete-files")
 async def delete_target_set_files(
     set_name: str,

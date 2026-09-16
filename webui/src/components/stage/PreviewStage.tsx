@@ -1,5 +1,6 @@
 import { useRef, useState } from 'react';
 import { Video, Image as ImageIcon, User } from 'lucide-react';
+import { toast } from 'sonner';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import type { ExtractedFace, JobState, TargetFile } from '@/types';
 
@@ -21,6 +22,8 @@ interface PreviewStageProps {
   onTargetTypeChange: (type: "upload" | "set") => void;
   onTargetChange: (files: File[]) => void;
   availableModels: string[];
+  enableFaceCleanTools?: boolean;
+  onOpenFaceClean?: () => void;
   onOpenModelBuilder: () => void;
   onOpenTargetManager: () => void;
   onOpenImmichManager: () => void;
@@ -34,7 +37,8 @@ export function PreviewStage({
   referenceFaces, referenceThreshold,
   onSourceTypeChange, onSourceChange, onSourceModelChange, 
   onTargetTypeChange, onTargetChange,
-  availableModels, onOpenModelBuilder, onOpenTargetManager, onOpenImmichManager, onOpenReferenceSelector
+  availableModels, enableFaceCleanTools, onOpenFaceClean,
+  onOpenModelBuilder, onOpenTargetManager, onOpenImmichManager, onOpenReferenceSelector
 }: PreviewStageProps) {
   
   const sourceInputRef = useRef<HTMLInputElement>(null);
@@ -134,7 +138,26 @@ export function PreviewStage({
           onDrop={handleSourceDrop}
         >
           <div className="flex items-center justify-between">
-            <span className="font-mono text-[10px] tracking-widest text-foreground">SOURCE FACE</span>
+            <div className="flex items-center gap-2">
+              <span className="font-mono text-[10px] tracking-widest text-foreground">SOURCE FACE</span>
+              {enableFaceCleanTools && (
+                <button 
+                  type="button"
+                  title="Visual Face Boundary Tuner"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    if (!sourceFile && !sourcePreview) {
+                      toast.info("Please upload a source image first");
+                      return;
+                    }
+                    onOpenFaceClean?.();
+                  }}
+                  className="text-[10px] font-mono px-2 py-0.5 rounded border border-border hover:bg-primary/20 hover:text-primary transition-colors text-muted-foreground"
+                >
+                  BOUNDARY
+                </button>
+              )}
+            </div>
             <div className="flex bg-background border border-border rounded-md overflow-hidden text-[10px] font-mono">
               <button 
                 className={`px-3 py-1 ${sourceType === "image" ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-secondary"}`}

@@ -102,3 +102,63 @@ def install_models(force: bool = False) -> Dict[str, int]:
     logger.info("-" * 40)
     logger.info(f"Installation Complete. Success: {success_count} | Failed: {fail_count}")
     return {"success": success_count, "failed": fail_count}
+
+def optimize_models_for_job(job_config):
+    """
+    Unload any cached ONNX model sessions that are NOT needed for the current job.
+    This guarantees that when a user turns off a feature (e.g. Region, Occlusion, Restore, Face Clean),
+    the corresponding model is immediately unloaded and VRAM is freed.
+    """
+    import gc
+    
+    # 1. Swapper: keep only active swap models
+    keep_swappers = [job_config.swap_model]
+    if getattr(job_config, "dual_swap", False):
+        keep_swappers.append(getattr(job_config, "swap_model_2", "hyperswap_high_512"))
+    from uniface.modules.swapper.swap import unload_unused_swappers
+    unload_unused_swappers(keep_swappers)
+
+    # 2. Restorer: keep only if restore processor or staged restore is requested
+    from uniface.modules.restorer import unload_unused_restorers
+    has_restore = (
+        ('restore' in job_config.processors) or 
+        getattr(job_config, "stage1_restore", False) or 
+        getattr(job_config, "stage2_restore", False)
+    )
+    if has_restore:
+        keep_restorers = [job_config.restore_model]
+        if getattr(job_config, "stage2_restore", False) and getattr(job_config, "dual_swap", False):
+            keep_restorers.append(getattr(job_config, "restore_model_2", "gfpgan_1.4"))
+        unload_unused_restorers(keep_restorers)
+    else:
+        unload_unused_restorers([])
+
+    # 3. Parser: BiSeNet is needed only if 'region' in mask_types OR clean_source_face is True
+    from uniface.modules.parser import get_parser
+    parser = get_parser()
+    need_bisenet = ('region' in job_config.mask_types) or getattr(job_config, "clean_source_face", False)
+    if not need_bisenet:
+        parser.unload_bisenet()
+
+    # 4. Parser: XSeg is needed only if 'occlusion' in mask_types
+    need_xseg = ('occlusion' in job_config.mask_types)
+    if not need_xseg:
+        parser.unload_xseg()
+    else:
+        parser.unload_xseg(keep_model=getattr(job_config, "occlusion_model", None))
+
+    gc.collect()
+
+def unload_all_models():
+    """Unload all cached models completely to free 100% of GPU VRAM and RAM."""
+    import gc
+    from uniface.modules.swapper.swap import unload_unused_swappers
+    from uniface.modules.restorer import unload_unused_restorers
+    from uniface.modules.parser import get_parser
+    
+    unload_unused_swappers([])
+    unload_unused_restorers([])
+    parser = get_parser()
+    parser.unload_bisenet()
+    parser.unload_xseg()
+    gc.collect()

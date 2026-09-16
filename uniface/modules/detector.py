@@ -45,7 +45,8 @@ class NativeDetector:
         extract_embedding: bool = True,
         extract_gender_age: bool = True,
         detector_score: Optional[float] = None,
-        landmark_score: Optional[float] = None
+        landmark_score: Optional[float] = None,
+        clean_source_face: bool = False
     ) -> List[Face]:
         """Detect faces, find landmarks, and optionally extract embeddings and classify gender/age."""
         faces = []
@@ -65,8 +66,11 @@ class NativeDetector:
             # Convert 68-point back to 5-point for arcface (more stable alignment)
             refined_landmark_5 = face_math.convert_to_face_landmark_5(landmark_68)
             
-            # 3. Calculate embedding using ArcFace (optional)
-            embedding = self._calculate_embedding(frame, refined_landmark_5) if extract_embedding else None
+            # 3. Calculate embedding using ArcFace
+            if extract_embedding:
+                embedding = self._calculate_embedding(frame, refined_landmark_5)
+            else:
+                embedding = None
             
             # 4. Classify Gender & Age (optional)
             gender, age = self._detect_gender_age(frame, refined_landmark_5) if extract_gender_age else (None, None)
@@ -225,6 +229,43 @@ class NativeDetector:
         age = int(np.round(output[0][2] * 100))
         return gender, age
 
+    def clean_face_for_arcface(self, temp_vision_frame: np.ndarray, face_landmark_5: np.ndarray) -> Tuple[np.ndarray, Optional[np.ndarray], Optional[np.ndarray]]:
+        """
+        Analyze face with BiSeNet and detect hair on the forehead.
+        No destructive inpainting is performed on the source image, preserving 100% natural facial fidelity.
+        Returns: (temp_vision_frame, orig_ffhq_crop, forehead_hair_mask)
+        """
+        from uniface.modules.parser import get_parser
+        parser = get_parser()
+        
+        # 1. Warp full frame to ffhq_512
+        model_size = (512, 512)
+        ffhq_crop, ffhq_matrix = face_math.warp_face_by_face_landmark_5(
+            temp_vision_frame, face_landmark_5, 'ffhq_512', model_size
+        )
+        if ffhq_crop is None or ffhq_matrix is None:
+            return temp_vision_frame, None, None
+            
+        # 2. Run BiSeNet segmentation
+        bisenet = parser._get_bisenet_session()
+        prepare_crop = ffhq_crop[:, :, ::-1].astype(np.float32) / 255.0
+        prepare_crop = np.subtract(prepare_crop, np.array([0.485, 0.456, 0.406], dtype=np.float32))
+        prepare_crop = np.divide(prepare_crop, np.array([0.229, 0.224, 0.225], dtype=np.float32))
+        prepare_crop = np.expand_dims(prepare_crop, axis=0).transpose(0, 3, 1, 2)
+        
+        pred = bisenet.run(None, {bisenet.get_inputs()[0].name: prepare_crop})[0][0]
+        class_map = pred.argmax(axis=0) # 512x512
+        
+        # Hair (17) or Hat (18)
+        hair_mask = np.isin(class_map, [17, 18]).astype(np.uint8) * 255
+        
+        # Upper face & forehead zone (where bangs/hair fall over the face)
+        forehead_zone = np.zeros_like(hair_mask)
+        cv2.ellipse(forehead_zone, (256, 175), (145, 115), 0, 0, 360, 255, -1)
+        
+        target_hair = cv2.bitwise_and(hair_mask, forehead_zone)
+        return temp_vision_frame, ffhq_crop, target_hair
+
 
 # Export a default instance
 import threading
@@ -236,7 +277,8 @@ def detect(
     extract_embedding: bool = True,
     extract_gender_age: bool = True,
     detector_score: Optional[float] = None,
-    landmark_score: Optional[float] = None
+    landmark_score: Optional[float] = None,
+    clean_source_face: bool = False
 ) -> List[Face]:
     global detector_app
     if detector_app is None:
@@ -248,5 +290,6 @@ def detect(
         extract_embedding=extract_embedding,
         extract_gender_age=extract_gender_age,
         detector_score=detector_score,
-        landmark_score=landmark_score
+        landmark_score=landmark_score,
+        clean_source_face=clean_source_face
     )

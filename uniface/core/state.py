@@ -46,6 +46,26 @@ class StateManager:
         self.face_detector_score: float = 0.65
         self.face_landmark_score: float = 0.50
         
+        # Dual-Stage Swap & Staged Restore Settings
+        self.stage1_restore: bool = False
+        self.dual_swap: bool = False
+        self.swap_model_2: str = "hyperswap_high_512"
+        self.swap_weight_2: float = 0.80
+        self.stage2_restore: bool = True
+        self.restore_model_2: str = "gfpgan_1.4"
+        self.restore_weight_2: float = 1.0
+        self.restore_blend_2: int = 100
+        
+        # Clean Source Face & Mask Padding
+        self.clean_source_face: bool = False
+        self.mask_padding: List[int] = [0, 0, 0, 0]
+        self.mask_blur: float = 0.3
+        
+        # ReActor Enhancements & Face Boost
+        self.face_boost: str = "none"  # "none", "256", "512"
+        self.restore_source_face: bool = False
+        self.target_hair_protect: bool = True
+        
         # Immich Settings
         self.immich_url: str = ""
         self.immich_api_key: str = ""
@@ -93,6 +113,17 @@ class StateManager:
                 if "restore_blend" in p: self.restore_blend = int(p["restore_blend"])
                 if "face_detector_score" in p: self.face_detector_score = float(p["face_detector_score"])
                 if "face_landmark_score" in p: self.face_landmark_score = float(p["face_landmark_score"])
+                if "stage1_restore" in p: self.stage1_restore = p["stage1_restore"].lower() == "true"
+                if "dual_swap" in p: self.dual_swap = p["dual_swap"].lower() == "true"
+                if "swap_model_2" in p: self.swap_model_2 = p["swap_model_2"]
+                if "swap_weight_2" in p: self.swap_weight_2 = float(p["swap_weight_2"])
+                if "stage2_restore" in p: self.stage2_restore = p["stage2_restore"].lower() == "true"
+                if "restore_model_2" in p: self.restore_model_2 = p["restore_model_2"]
+                if "restore_weight_2" in p: self.restore_weight_2 = float(p["restore_weight_2"])
+                if "restore_blend_2" in p: self.restore_blend_2 = int(p["restore_blend_2"])
+                if "clean_source_face" in p: self.clean_source_face = p["clean_source_face"].lower() == "true"
+                if "mask_padding" in p: self.mask_padding = [int(x) for x in p["mask_padding"].split()]
+                if "mask_blur" in p: self.mask_blur = float(p["mask_blur"])
             
             if "IMMICH" in config:
                 i = config["IMMICH"]
@@ -128,6 +159,17 @@ class StateManager:
         parser.add_argument("--restore_blend", type=int)
         parser.add_argument("--face-detector-score", "--face_detector_score", type=float, dest="face_detector_score")
         parser.add_argument("--face-landmark-score", "--face_landmark_score", type=float, dest="face_landmark_score")
+        parser.add_argument("--stage1-restore", "--stage1_restore", action="store_true", default=None, dest="stage1_restore")
+        parser.add_argument("--dual-swap", "--dual_swap", action="store_true", default=None, dest="dual_swap")
+        parser.add_argument("--swap-model-2", "--swap_model_2", type=str, dest="swap_model_2")
+        parser.add_argument("--swap-weight-2", "--swap_weight_2", type=float, dest="swap_weight_2")
+        parser.add_argument("--stage2-restore", "--stage2_restore", action="store_true", default=None, dest="stage2_restore")
+        parser.add_argument("--restore-model-2", "--restore_model_2", type=str, dest="restore_model_2")
+        parser.add_argument("--restore-weight-2", "--restore_weight_2", type=float, dest="restore_weight_2")
+        parser.add_argument("--restore-blend-2", "--restore_blend_2", type=int, dest="restore_blend_2")
+        parser.add_argument("--clean-source-face", "--clean_source_face", action="store_true", default=None, dest="clean_source_face")
+        parser.add_argument("--mask-padding", "--mask_padding", nargs=4, type=int, dest="mask_padding")
+        parser.add_argument("--mask-blur", "--mask_blur", type=float, dest="mask_blur")
         parser.add_argument("--log-level", choices=["debug", "info", "warning", "error"], type=str.lower)
         parser.add_argument("--log-info", action="store_true", help="Enable INFO logging")
         parser.add_argument("--log-debug", action="store_true", help="Enable DEBUG logging")
@@ -151,6 +193,17 @@ class StateManager:
         if args.restore_blend is not None: self.restore_blend = args.restore_blend
         if getattr(args, "face_detector_score", None) is not None: self.face_detector_score = args.face_detector_score
         if getattr(args, "face_landmark_score", None) is not None: self.face_landmark_score = args.face_landmark_score
+        if getattr(args, "stage1_restore", None) is not None: self.stage1_restore = args.stage1_restore
+        if getattr(args, "dual_swap", None) is not None: self.dual_swap = args.dual_swap
+        if getattr(args, "swap_model_2", None) is not None: self.swap_model_2 = args.swap_model_2
+        if getattr(args, "swap_weight_2", None) is not None: self.swap_weight_2 = args.swap_weight_2
+        if getattr(args, "stage2_restore", None) is not None: self.stage2_restore = args.stage2_restore
+        if getattr(args, "restore_model_2", None) is not None: self.restore_model_2 = args.restore_model_2
+        if getattr(args, "restore_weight_2", None) is not None: self.restore_weight_2 = args.restore_weight_2
+        if getattr(args, "restore_blend_2", None) is not None: self.restore_blend_2 = args.restore_blend_2
+        if getattr(args, "clean_source_face", None) is not None: self.clean_source_face = args.clean_source_face
+        if getattr(args, "mask_padding", None) is not None: self.mask_padding = args.mask_padding
+        if getattr(args, "mask_blur", None) is not None: self.mask_blur = args.mask_blur
 
         if getattr(args, 'log_debug', False):
             self.set_log_level("debug")

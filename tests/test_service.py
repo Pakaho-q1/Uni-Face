@@ -152,5 +152,140 @@ class TestFaceService(unittest.TestCase):
         res = filter_and_sort_target_faces(faces, gender_filter="all", face_order="right_to_left")
         self.assertEqual(res[0], f3) # X=300
 
+    @patch('uniface.core.service.restore')
+    @patch('uniface.core.service.swap')
+    @patch('uniface.core.service.detect')
+    def test_process_image_dual_stage_swap(self, mock_detect, mock_swap, mock_restore):
+        from uniface.core.types import JobConfig
+        
+        mock_source_face = Face(bbox=np.array([0, 0, 100, 100]), embedding=np.zeros((512,)))
+        mock_target_face = Face(bbox=np.array([50, 50, 150, 150]), embedding=np.zeros((512,)))
+        mock_detect.side_effect = [[mock_source_face], [mock_target_face]]
+        
+        mock_swap.return_value = np.zeros((200, 200, 3), dtype=np.uint8)
+        mock_restore.return_value = np.ones((200, 200, 3), dtype=np.uint8) * 128
+        
+        service = FaceService()
+        source_img = np.zeros((200, 200, 3), dtype=np.uint8)
+        target_img = np.zeros((200, 200, 3), dtype=np.uint8)
+        
+        cfg = JobConfig(
+            processors=['swap'],
+            swap_model="inswapper_128",
+            swap_weight=0.6,
+            dual_swap=True,
+            swap_model_2="hyperswap_high_512",
+            swap_weight_2=0.85,
+            stage1_restore=False,
+            stage2_restore=False
+        )
+        
+        _ = service.process_image(source_img, target_img, job_config=cfg)
+        
+        # mock_swap should be called twice!
+        self.assertEqual(mock_swap.call_count, 2)
+        # Stage 1 call arguments:
+        call_1_kwargs = mock_swap.call_args_list[0][1]
+        self.assertEqual(call_1_kwargs["swap_model"], "inswapper_128")
+        self.assertEqual(call_1_kwargs["swap_weight"], 0.6)
+        
+        # Stage 2 call arguments:
+        call_2_kwargs = mock_swap.call_args_list[1][1]
+        self.assertEqual(call_2_kwargs["swap_model"], "hyperswap_high_512")
+        self.assertEqual(call_2_kwargs["swap_weight"], 0.85)
+
+    @patch('uniface.core.service.restore')
+    @patch('uniface.core.service.swap')
+    @patch('uniface.core.service.detect')
+    def test_process_image_staged_restore(self, mock_detect, mock_swap, mock_restore):
+        from uniface.core.types import JobConfig
+        
+        mock_source_face = Face(bbox=np.array([0, 0, 100, 100]), embedding=np.zeros((512,)))
+        mock_target_face = Face(bbox=np.array([50, 50, 150, 150]), embedding=np.zeros((512,)))
+        mock_detect.side_effect = [[mock_source_face], [mock_target_face]]
+        
+        mock_swap.return_value = np.zeros((200, 200, 3), dtype=np.uint8)
+        mock_restore.return_value = np.ones((200, 200, 3), dtype=np.uint8) * 128
+        
+        service = FaceService()
+        source_img = np.zeros((200, 200, 3), dtype=np.uint8)
+        target_img = np.zeros((200, 200, 3), dtype=np.uint8)
+        
+        cfg = JobConfig(
+            processors=['swap', 'restore'],
+            swap_model="inswapper_128",
+            swap_weight=0.6,
+            stage1_restore=True,
+            restore_model="gfpgan_1.4",
+            restore_weight=0.5,
+            dual_swap=True,
+            swap_model_2="hyperswap_high_512",
+            swap_weight_2=0.8,
+            stage2_restore=True,
+            restore_model_2="gpen_bfr_256",
+            restore_weight_2=0.9
+        )
+        
+        _ = service.process_image(source_img, target_img, job_config=cfg)
+        
+        # 2 swaps and 2 restores!
+        self.assertEqual(mock_swap.call_count, 2)
+        self.assertEqual(mock_restore.call_count, 2)
+        
+        # Stage 1 restore call:
+        res_call_1_kwargs = mock_restore.call_args_list[0][1]
+        self.assertEqual(res_call_1_kwargs["restore_model"], "gfpgan_1.4")
+        self.assertEqual(res_call_1_kwargs["weight"], 0.5)
+        
+        # Stage 2 restore call:
+        res_call_2_kwargs = mock_restore.call_args_list[1][1]
+        self.assertEqual(res_call_2_kwargs["restore_model"], "gpen_bfr_256")
+        self.assertEqual(res_call_2_kwargs["weight"], 0.9)
+
+    @patch('uniface.core.service.restore')
+    @patch('uniface.core.service.swap')
+    @patch('uniface.core.service.detect')
+    def test_process_image_dual_swap_with_face_boost_and_source_restore(self, mock_detect, mock_swap, mock_restore):
+        from uniface.core.types import JobConfig
+        
+        mock_source_face = Face(bbox=np.array([0, 0, 100, 100]), landmark_5=np.array([[10, 10], [20, 10], [15, 15], [12, 20], [18, 20]]), embedding=np.ones((512,)))
+        mock_target_face = Face(bbox=np.array([50, 50, 150, 150]), landmark_5=np.array([[60, 60], [80, 60], [70, 75], [65, 90], [75, 90]]), embedding=np.zeros((512,)))
+        mock_detect.side_effect = [[mock_source_face], [mock_target_face]]
+        
+        mock_swap.return_value = np.ones((200, 200, 3), dtype=np.uint8) * 100
+        
+        service = FaceService()
+        source_img = np.zeros((200, 200, 3), dtype=np.uint8)
+        target_img = np.zeros((200, 200, 3), dtype=np.uint8)
+        
+        cfg = JobConfig(
+            processors=['swap'],
+            swap_model="inswapper_128",
+            swap_weight=0.6,
+            dual_swap=True,
+            swap_model_2="hyperswap_high_512",
+            swap_weight_2=0.8,
+            face_boost="512",
+            restore_source_face=False,
+            target_hair_protect=True
+        )
+        
+        result = service.process_image(source_img, target_img, job_config=cfg)
+        
+        # Dual swap executed twice cleanly with face_boost forwarded
+        self.assertEqual(mock_swap.call_count, 2)
+        stage1_kwargs = mock_swap.call_args_list[0][1]
+        self.assertEqual(stage1_kwargs["swap_model"], "inswapper_128")
+        self.assertEqual(stage1_kwargs["face_boost"], "512")
+        self.assertTrue(stage1_kwargs["target_hair_protect"])
+        
+        stage2_kwargs = mock_swap.call_args_list[1][1]
+        self.assertEqual(stage2_kwargs["swap_model"], "hyperswap_high_512")
+        self.assertEqual(stage2_kwargs["face_boost"], "512")
+        self.assertTrue(stage2_kwargs["target_hair_protect"])
+        
+        # target_face landmarks remain pure
+        np.testing.assert_array_equal(mock_target_face.landmark_5, np.array([[60, 60], [80, 60], [70, 75], [65, 90], [75, 90]]))
+
 if __name__ == '__main__':
     unittest.main()

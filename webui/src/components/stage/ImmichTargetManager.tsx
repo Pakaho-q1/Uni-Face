@@ -1,6 +1,7 @@
-import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { Cloud, Search, Video, Image as ImageIcon, Check, Loader2, User, Folder, Tag, X, ChevronDown } from 'lucide-react';
 import { toast } from 'sonner';
+import { useVirtualizer } from '@tanstack/react-virtual';
 
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
@@ -31,6 +32,64 @@ function formatDuration(duration?: number): string {
   return `${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
 }
 
+interface ImmichAssetCardProps {
+  asset: ImmichAsset;
+  isSelected: boolean;
+  thumbUrl: string;
+  onToggle: (id: string) => void;
+}
+
+const ImmichAssetCard = React.memo(function ImmichAssetCard({
+  asset,
+  isSelected,
+  thumbUrl,
+  onToggle,
+}: ImmichAssetCardProps) {
+  const isVid = asset.type === 'video';
+
+  return (
+    <div
+      className={`relative group aspect-square rounded-md overflow-hidden border-2 cursor-pointer transition-colors ${
+        isSelected 
+          ? 'border-primary shadow-[0_0_12px_rgba(var(--primary),0.3)]' 
+          : 'border-transparent hover:border-muted-foreground/50'
+      }`}
+      onClick={() => onToggle(asset.id)}
+    >
+      {/* Checkbox Overlay */}
+      <div className={`absolute top-2 right-2 z-10 bg-background/80 rounded-sm border transition-opacity ${
+        isSelected ? 'border-primary' : 'border-border opacity-0 group-hover:opacity-100'
+      }`}>
+        <div className="w-4 h-4 flex items-center justify-center">
+          {isSelected && <div className="w-2 h-2 bg-primary rounded-sm" />}
+        </div>
+      </div>
+
+      {/* Crisp Image Thumbnail from Immich */}
+      <img 
+        src={thumbUrl} 
+        className="w-full h-full object-cover bg-zinc-900" 
+        alt={asset.filename} 
+        loading="lazy" 
+        onError={(e) => {
+          e.currentTarget.src = 'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="40" height="40"><rect fill="%23222" width="40" height="40"/><text fill="%23666" x="50%" y="50%" dominant-baseline="middle" text-anchor="middle" font-size="10">ERR</text></svg>';
+        }}
+      />
+
+      {/* Type Badge */}
+      {isVid ? (
+        <div className="absolute bottom-1 left-1 bg-black/70 rounded px-1.5 py-0.5 text-[10px] font-mono text-white flex items-center pointer-events-none">
+          <Video size={10} className="mr-1 text-blue-400" /> {formatDuration(asset.duration)}
+        </div>
+      ) : (
+        <div className="absolute bottom-1 left-1 bg-black/70 rounded px-1.5 py-0.5 text-[10px] font-mono text-white flex items-center pointer-events-none">
+          <ImageIcon size={10} className="mr-1 text-zinc-400" /> IMG
+        </div>
+      )}
+    </div>
+  );
+});
+
 export function ImmichTargetManager({
   open,
   onOpenChange,
@@ -53,6 +112,32 @@ export function ImmichTargetManager({
   const [comboboxOpen, setComboboxOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
+
+  // Responsive Grid Columns
+  const [columns, setColumns] = useState(4);
+  const [containerWidth, setContainerWidth] = useState(600);
+
+  useEffect(() => {
+    const container = scrollContainerRef.current;
+    if (!container) return;
+
+    const updateDimensions = () => {
+      const width = container.clientWidth;
+      if (width > 0) {
+        setContainerWidth(width);
+        if (width >= 600) setColumns(5);
+        else if (width >= 460) setColumns(4);
+        else if (width >= 320) setColumns(3);
+        else setColumns(2);
+      }
+    };
+
+    updateDimensions();
+    const observer = new ResizeObserver(updateDimensions);
+    observer.observe(container);
+    return () => observer.disconnect();
+  }, [open]);
 
   useEffect(() => {
     const handleClickOutside = (e: MouseEvent) => {
@@ -138,6 +223,27 @@ export function ImmichTargetManager({
     loadAssets();
   }, [selectedId, categoryType, immichUrl, immichApiKey]);
 
+  // Reset scroll when category or selectedId changes
+  useEffect(() => {
+    if (scrollContainerRef.current) {
+      scrollContainerRef.current.scrollTop = 0;
+    }
+  }, [selectedId, categoryType]);
+
+  const rowCount = Math.ceil(assets.length / columns);
+  const estimatedRowHeight = Math.round(containerWidth / columns + 12);
+
+  const rowVirtualizer = useVirtualizer({
+    count: rowCount,
+    getScrollElement: () => scrollContainerRef.current,
+    estimateSize: () => estimatedRowHeight,
+    overscan: 2,
+  });
+
+  useEffect(() => {
+    rowVirtualizer.measure();
+  }, [columns, rowVirtualizer]);
+
   // Filter items in Combobox based on search query
   const filteredItems = useMemo(() => {
     const query = searchQuery.toLowerCase().trim();
@@ -171,16 +277,29 @@ export function ImmichTargetManager({
     return '';
   }, [selectedId, categoryType, people, albums, tags]);
 
-  const toggleAssetSelection = (assetId: string) => {
-    const next = new Set(selectedAssetIds);
-    if (next.has(assetId)) next.delete(assetId);
-    else next.add(assetId);
-    setSelectedAssetIds(next);
-  };
+  // Stable toggle callback with pure functional update: renders ONLY toggled item
+  const toggleAssetSelection = useCallback((assetId: string) => {
+    setSelectedAssetIds(prev => {
+      const next = new Set(prev);
+      if (next.has(assetId)) next.delete(assetId);
+      else next.add(assetId);
+      return next;
+    });
+  }, []);
 
-  const handleClearSelection = () => {
+  const handleClearSelection = useCallback(() => {
     setSelectedAssetIds(new Set());
-  };
+  }, []);
+
+  const handleToggleSelectAll = useCallback(() => {
+    if (assets.length === 0) return;
+    setSelectedAssetIds(prev => {
+      if (prev.size === assets.length) {
+        return new Set();
+      }
+      return new Set(assets.map(a => a.id));
+    });
+  }, [assets]);
 
   const handleUseTargets = async () => {
     if (assets.length === 0) return;
@@ -421,20 +540,35 @@ export function ImmichTargetManager({
             <span className="text-xs font-mono tracking-wider text-muted-foreground uppercase">
               Gallery {assets.length > 0 && `(${assets.length} items)`}
             </span>
-            {selectedAssetIds.size > 0 && (
-              <Button
-                variant="ghost"
-                size="sm"
-                className="h-6 text-[10px] text-muted-foreground hover:text-foreground"
-                onClick={handleClearSelection}
-              >
-                Clear Selection ({selectedAssetIds.size})
-              </Button>
-            )}
+            <div className="flex items-center gap-2">
+              {assets.length > 0 && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-6 text-[10px] text-muted-foreground hover:text-foreground"
+                  onClick={handleToggleSelectAll}
+                >
+                  {selectedAssetIds.size === assets.length ? 'Deselect All' : 'Select All'}
+                </Button>
+              )}
+              {selectedAssetIds.size > 0 && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-6 text-[10px] text-muted-foreground hover:text-foreground"
+                  onClick={handleClearSelection}
+                >
+                  Clear Selection ({selectedAssetIds.size})
+                </Button>
+              )}
+            </div>
           </div>
 
-          {/* Gallery Grid (Renders crisp image thumbnails for both photos & videos) */}
-          <div className="flex-1 overflow-y-auto min-h-[300px] border border-border rounded-lg bg-black/50 p-3">
+          {/* Virtualized Gallery Grid */}
+          <div
+            ref={scrollContainerRef}
+            className="flex-1 overflow-y-auto min-h-[300px] max-h-[50vh] border border-border rounded-lg bg-black/50 p-3"
+          >
             {isAssetsLoading ? (
               <div className="w-full h-full flex flex-col items-center justify-center text-muted-foreground gap-2 py-16">
                 <Loader2 size={24} className="animate-spin text-primary" />
@@ -451,52 +585,43 @@ export function ImmichTargetManager({
                 No media found in this {categoryType.slice(0, -1)}.
               </div>
             ) : (
-              <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 gap-3">
-                {assets.map((asset) => {
-                  const isSelected = selectedAssetIds.has(asset.id);
-                  const isVid = asset.type === 'video';
-                  const thumbUrl = ENDPOINTS.IMMICH_ASSET_THUMB(asset.id, immichUrl, immichApiKey);
+              <div
+                style={{
+                  height: `${rowVirtualizer.getTotalSize()}px`,
+                  width: '100%',
+                  position: 'relative',
+                }}
+              >
+                {rowVirtualizer.getVirtualItems().map((virtualRow) => {
+                  const startIndex = virtualRow.index * columns;
+                  const rowAssets = assets.slice(startIndex, startIndex + columns);
 
                   return (
                     <div
-                      key={asset.id}
-                      className={`relative group aspect-square rounded-md overflow-hidden border-2 cursor-pointer transition-colors ${
-                        isSelected 
-                          ? 'border-primary shadow-[0_0_12px_rgba(var(--primary),0.3)]' 
-                          : 'border-transparent hover:border-muted-foreground/50'
-                      }`}
-                      onClick={() => toggleAssetSelection(asset.id)}
+                      key={virtualRow.key}
+                      data-index={virtualRow.index}
+                      ref={rowVirtualizer.measureElement}
+                      style={{
+                        position: 'absolute',
+                        top: 0,
+                        left: 0,
+                        width: '100%',
+                        transform: `translateY(${virtualRow.start}px)`,
+                        display: 'grid',
+                        gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))`,
+                        gap: '0.75rem',
+                        paddingBottom: '0.75rem',
+                      }}
                     >
-                      {/* Checkbox Overlay */}
-                      <div className={`absolute top-2 right-2 z-10 bg-background/80 rounded-sm border ${
-                        isSelected ? 'border-primary' : 'border-border opacity-0 group-hover:opacity-100'
-                      }`}>
-                        <div className="w-4 h-4 flex items-center justify-center">
-                          {isSelected && <div className="w-2 h-2 bg-primary rounded-sm" />}
-                        </div>
-                      </div>
-
-                      {/* Crisp Image Thumbnail from Immich */}
-                      <img 
-                        src={thumbUrl} 
-                        className="w-full h-full object-cover bg-zinc-900" 
-                        alt={asset.filename} 
-                        loading="lazy" 
-                        onError={(e) => {
-                          e.currentTarget.src = 'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="40" height="40"><rect fill="%23222" width="40" height="40"/><text fill="%23666" x="50%" y="50%" dominant-baseline="middle" text-anchor="middle" font-size="10">ERR</text></svg>';
-                        }}
-                      />
-
-                      {/* Type Badge */}
-                      {isVid ? (
-                        <div className="absolute bottom-1 left-1 bg-black/70 rounded px-1.5 py-0.5 text-[10px] font-mono text-white flex items-center">
-                          <Video size={10} className="mr-1 text-blue-400" /> {formatDuration(asset.duration)}
-                        </div>
-                      ) : (
-                        <div className="absolute bottom-1 left-1 bg-black/70 rounded px-1.5 py-0.5 text-[10px] font-mono text-white flex items-center">
-                          <ImageIcon size={10} className="mr-1 text-zinc-400" /> IMG
-                        </div>
-                      )}
+                      {rowAssets.map((asset) => (
+                        <ImmichAssetCard
+                          key={asset.id}
+                          asset={asset}
+                          isSelected={selectedAssetIds.has(asset.id)}
+                          thumbUrl={ENDPOINTS.IMMICH_ASSET_THUMB(asset.id, immichUrl, immichApiKey)}
+                          onToggle={toggleAssetSelection}
+                        />
+                      ))}
                     </div>
                   );
                 })}

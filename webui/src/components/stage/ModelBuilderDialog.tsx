@@ -10,12 +10,15 @@ interface ModelBuilderDialogProps {
   open: boolean;
   onClose: () => void;
   onModelBuilt: () => void;
+  enableFaceCleanTools?: boolean;
+  onOpenFaceClean?: (file: File) => void;
 }
 
-export function ModelBuilderDialog({ open, onClose, onModelBuilt }: ModelBuilderDialogProps) {
+export function ModelBuilderDialog({ open, onClose, onModelBuilt, enableFaceCleanTools, onOpenFaceClean }: ModelBuilderDialogProps) {
   const [activeTab, setActiveTab] = useState<'build' | 'manage'>('build');
   const [modelName, setModelName] = useState('');
   const [files, setFiles] = useState<File[]>([]);
+  const [selectedImageIndex, setSelectedImageIndex] = useState<number | null>(null);
   const [isBuilding, setIsBuilding] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -69,10 +72,17 @@ export function ModelBuilderDialog({ open, onClose, onModelBuilt }: ModelBuilder
 
   const removeFile = (index: number) => {
     setFiles(prev => prev.filter((_, i) => i !== index));
+    setSelectedImageIndex(prev => {
+      if (prev === null) return null;
+      if (prev === index) return null;
+      if (prev > index) return prev - 1;
+      return prev;
+    });
   };
 
   const clearAllFiles = () => {
     setFiles([]);
+    setSelectedImageIndex(null);
   };
 
   const handleDeleteModel = async (name: string) => {
@@ -114,6 +124,7 @@ export function ModelBuilderDialog({ open, onClose, onModelBuilt }: ModelBuilder
       await loadSavedModels();
       setModelName('');
       setFiles([]);
+      setSelectedImageIndex(null);
       setActiveTab('manage');
     } catch (err: any) {
       setError(err.message || "Failed to build model.");
@@ -178,9 +189,28 @@ export function ModelBuilderDialog({ open, onClose, onModelBuilt }: ModelBuilder
 
             <div className="space-y-2 flex-1 flex flex-col min-h-0">
               <div className="flex items-center justify-between">
-                <label className="text-xs font-mono font-medium text-foreground">
-                  Training Images ({files.length})
-                </label>
+                <div className="flex items-center gap-2">
+                  <label className="text-xs font-mono font-medium text-foreground">
+                    Training Images ({files.length})
+                  </label>
+                  {enableFaceCleanTools && (
+                    <button
+                      type="button"
+                      disabled={isBuilding}
+                      onClick={() => {
+                        if (files.length === 0 || selectedImageIndex === null || !files[selectedImageIndex]) {
+                          toast.info("Please upload and select an image first");
+                          return;
+                        }
+                        onOpenFaceClean?.(files[selectedImageIndex]);
+                      }}
+                      className="text-[10px] font-mono px-2 py-0.5 rounded border border-border hover:bg-primary/20 hover:text-primary transition-colors text-muted-foreground disabled:opacity-50"
+                      title="Visual Face Boundary Tuner for selected image"
+                    >
+                      BOUNDARY
+                    </button>
+                  )}
+                </div>
                 {files.length > 0 && (
                   <button
                     onClick={clearAllFiles}
@@ -214,32 +244,50 @@ export function ModelBuilderDialog({ open, onClose, onModelBuilt }: ModelBuilder
               {filePreviews.length > 0 && (
                 <div className="border border-border rounded-xl p-2.5 bg-background/50 flex-1 overflow-y-auto min-h-[140px] max-h-[220px]">
                   <div className="grid grid-cols-4 sm:grid-cols-5 gap-2">
-                    {filePreviews.map((item, i) => (
-                      <div 
-                        key={i} 
-                        className="group relative aspect-square rounded-lg border border-border bg-secondary overflow-hidden shadow-sm hover:border-primary transition-all"
-                      >
-                        <img 
-                          src={item.url} 
-                          alt={item.file.name} 
-                          className="w-full h-full object-cover" 
-                        />
-                        
-                        {/* Delete Button on Hover / Mobile */}
-                        <button
-                          onClick={() => removeFile(i)}
-                          disabled={isBuilding}
-                          className="absolute top-1 right-1 w-6 h-6 rounded-full bg-black/80 hover:bg-destructive text-white flex items-center justify-center transition-colors shadow"
-                          title="Remove image"
+                    {filePreviews.map((item, i) => {
+                      const isSelected = selectedImageIndex === i;
+                      return (
+                        <div 
+                          key={i} 
+                          onClick={() => setSelectedImageIndex(isSelected ? null : i)}
+                          className={`group relative aspect-square rounded-lg border bg-secondary overflow-hidden shadow-sm transition-all cursor-pointer ${
+                            isSelected 
+                              ? 'border-primary ring-2 ring-primary/80 scale-[0.98]' 
+                              : 'border-border hover:border-primary/60'
+                          }`}
                         >
-                          <X size={13} />
-                        </button>
-                        
-                        <div className="absolute bottom-0 inset-x-0 bg-black/70 px-1 py-0.5 text-[9px] text-muted-foreground truncate font-mono text-center">
-                          {item.file.name}
+                          <img 
+                            src={item.url} 
+                            alt={item.file.name} 
+                            className="w-full h-full object-cover" 
+                          />
+
+                          {isSelected && (
+                            <div className="absolute top-1 left-1 bg-primary text-primary-foreground text-[8px] font-mono font-bold px-1.5 py-0.2 rounded shadow">
+                              ACTIVE
+                            </div>
+                          )}
+                          
+                          {/* Delete Button on Hover / Mobile */}
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              removeFile(i);
+                            }}
+                            disabled={isBuilding}
+                            className="absolute top-1 right-1 w-6 h-6 rounded-full bg-black/80 hover:bg-destructive text-white flex items-center justify-center transition-colors shadow"
+                            title="Remove image"
+                          >
+                            <X size={13} />
+                          </button>
+                          
+                          <div className="absolute bottom-0 inset-x-0 bg-black/70 px-1 py-0.5 text-[9px] text-muted-foreground truncate font-mono text-center">
+                            {item.file.name}
+                          </div>
                         </div>
-                      </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 </div>
               )}

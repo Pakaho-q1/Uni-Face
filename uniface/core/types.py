@@ -47,6 +47,27 @@ class JobConfig:
     reference_threshold: float = 0.6
     face_detector_score: float = 0.65
     face_landmark_score: float = 0.50
+    
+    # Dual-Stage Swap & Staged Restore Settings
+    stage1_restore: bool = False
+    dual_swap: bool = False
+    swap_model_2: str = "hyperswap_high_512"
+    swap_weight_2: float = 0.80
+    stage2_restore: bool = True
+    restore_model_2: str = "gfpgan_1.4"
+    restore_weight_2: float = 1.0
+    restore_blend_2: int = 100
+    
+    # Clean Source Face & Mask Padding
+    clean_source_face: bool = False
+    mask_padding: list[int] = field(default_factory=lambda: [0, 0, 0, 0])
+    mask_blur: float = 0.3
+    
+    # ReActor Enhancements & Face Boost
+    face_boost: str = "none"  # "none", "256", "512"
+    restore_source_face: bool = False
+    target_hair_protect: bool = True
+    
     _cached_ref_embs: Optional[list[np.ndarray]] = field(default=None, repr=False, compare=False)
 
     def get_reference_embeddings(self) -> list[np.ndarray]:
@@ -89,6 +110,20 @@ class JobConfig:
             reference_face_ids=list(getattr(state_obj, "reference_face_ids", [])),
             reference_threshold=float(getattr(state_obj, "reference_threshold", 0.6)),
             face_detector_score=float(getattr(state_obj, "face_detector_score", 0.65)),
-            face_landmark_score=float(getattr(state_obj, "face_landmark_score", 0.50))
+            face_landmark_score=float(getattr(state_obj, "face_landmark_score", 0.50)),
+            stage1_restore=bool(getattr(state_obj, "stage1_restore", False)),
+            dual_swap=bool(getattr(state_obj, "dual_swap", False)),
+            swap_model_2=str(getattr(state_obj, "swap_model_2", "hyperswap_high_512")),
+            swap_weight_2=float(getattr(state_obj, "swap_weight_2", 0.80)),
+            stage2_restore=bool(getattr(state_obj, "stage2_restore", True)),
+            restore_model_2=str(getattr(state_obj, "restore_model_2", "gfpgan_1.4")),
+            restore_weight_2=float(getattr(state_obj, "restore_weight_2", 1.0)),
+            restore_blend_2=int(getattr(state_obj, "restore_blend_2", 100)),
+            clean_source_face=bool(getattr(state_obj, "clean_source_face", False)),
+            mask_padding=list(getattr(state_obj, "mask_padding", [0, 0, 0, 0])),
+            mask_blur=float(getattr(state_obj, "mask_blur", 0.3)),
+            face_boost=str(getattr(state_obj, "face_boost", "none")),
+            restore_source_face=bool(getattr(state_obj, "restore_source_face", False)),
+            target_hair_protect=bool(getattr(state_obj, "target_hair_protect", True))
         )
 

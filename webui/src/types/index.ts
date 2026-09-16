@@ -37,6 +37,19 @@ export interface JobStartSettings {
   reference_threshold: number;
   face_detector_score?: number;
   face_landmark_score?: number;
+  stage1_restore?: boolean;
+  dual_swap?: boolean;
+  swap_model_2?: string;
+  swap_weight_2?: number;
+  stage2_restore?: boolean;
+  restore_model_2?: string;
+  restore_weight_2?: number;
+  restore_blend_2?: number;
+  
+  // Clean Source & Mask Boundary Settings
+  clean_source_face?: boolean;
+  mask_padding?: number[];
+  mask_blur?: number;
   
   // Immich settings
   immich_url?: string;
@@ -157,6 +170,42 @@ export interface SettingsState {
   setFaceDetectorScore: (v: number[]) => void;
   faceLandmarkScore: number[];
   setFaceLandmarkScore: (v: number[]) => void;
+  
+  // Dual-Stage Swap & Staged Restore Settings
+  stage1Restore: boolean;
+  setStage1Restore: (v: boolean) => void;
+  dualSwap: boolean;
+  setDualSwap: (v: boolean) => void;
+  swapModel2: string;
+  setSwapModel2: (v: string) => void;
+  swapWeight2: number[];
+  setSwapWeight2: (v: number[]) => void;
+  stage2Restore: boolean;
+  setStage2Restore: (v: boolean) => void;
+  restoreModel2: string;
+  setRestoreModel2: (v: string) => void;
+  restoreWeight2: number[];
+  setRestoreWeight2: (v: number[]) => void;
+  restoreBlend2: number[];
+  setRestoreBlend2: (v: number[]) => void;
+  
+  // Clean Source & Mask Boundary Settings
+  enableFaceCleanTools: boolean;
+  setEnableFaceCleanTools: (v: boolean) => void;
+  cleanSourceFace: boolean;
+  setCleanSourceFace: (v: boolean) => void;
+  maskPadding: number[];
+  setMaskPadding: (v: number[]) => void;
+  maskBlur: number[];
+  setMaskBlur: (v: number[]) => void;
+  
+  // ReActor Logics
+  faceBoost: string;
+  setFaceBoost: (v: string) => void;
+  restoreSourceFace: boolean;
+  setRestoreSourceFace: (v: boolean) => void;
+  targetHairProtect: boolean;
+  setTargetHairProtect: (v: boolean) => void;
   
   // Immich Settings
   immichUrl: string;
