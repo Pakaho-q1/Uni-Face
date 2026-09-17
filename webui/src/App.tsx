@@ -54,6 +54,7 @@ export default function App() {
   const historyManager = useHistory();
   
   const updateActiveCount = useCallback(async () => {
+    if (typeof document !== 'undefined' && document.hidden) return;
     try {
       const count = await api.getActiveJobsCount();
       setActiveJobCount(count);
@@ -83,7 +84,16 @@ export default function App() {
     fetchModels();
     updateActiveCount();
     const countInterval = setInterval(updateActiveCount, 3000);
-    return () => clearInterval(countInterval);
+    const handleVisibilityChange = () => {
+      if (!document.hidden) {
+        updateActiveCount();
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => {
+      clearInterval(countInterval);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [updateActiveCount]);
 
@@ -176,6 +186,8 @@ export default function App() {
         mask_blur: (settings.enableFaceCleanTools ? settings.maskBlur[0] : 30) / 100,
         face_boost: settings.faceBoost,
         restore_source_face: settings.restoreSourceFace,
+        restore_source_face_model: settings.restoreSourceFaceModel,
+        restore_source_face_weight: settings.restoreSourceFaceWeight[0] / 100,
         target_hair_protect: settings.targetHairProtect,
         
         immich_url: settings.immichUrl,

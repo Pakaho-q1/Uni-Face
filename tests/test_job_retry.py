@@ -19,6 +19,7 @@ class TestJobRetryAndCleanup(unittest.TestCase):
         self.jm.jobs_file = os.path.join(self.tmp_dir.name, "jobs.json")
 
     def tearDown(self):
+        db.close_thread_connection()
         self.patcher.stop()
         self.tmp_dir.cleanup()
 

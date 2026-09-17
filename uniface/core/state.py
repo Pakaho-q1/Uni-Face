@@ -64,6 +64,8 @@ class StateManager:
         # ReActor Enhancements & Face Boost
         self.face_boost: str = "none"  # "none", "256", "512"
         self.restore_source_face: bool = False
+        self.restore_source_face_model: str = "gfpgan_1.4"
+        self.restore_source_face_weight: float = 0.8
         self.target_hair_protect: bool = True
         
         # Immich Settings

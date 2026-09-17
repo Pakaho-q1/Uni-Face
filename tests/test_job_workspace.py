@@ -44,6 +44,7 @@ class TestJobWorkspacePattern(unittest.TestCase):
         self.jm.jobs_file = os.path.join(self.tmp_dir.name, "jobs.json")
 
     def tearDown(self):
+        db.close_thread_connection()
         self.ws_mod_patcher.stop()
         self.pd_patcher.stop()
         self.ws_patcher.stop()
@@ -84,8 +85,8 @@ class TestJobWorkspacePattern(unittest.TestCase):
             target_file_ids=["target/target.webp"]
         )
         job_id = self.jm.create_job(self.platform, req)
-        
-        ws = get_job_workspace(self.platform, job_id)
+        ws = setup_job_hardlinks(self.platform, job_id, req)
+
         linked_src = os.path.join(ws["source_dir"], "source.jpg")
         linked_tgt = os.path.join(ws["target_dir"], "target.webp")
 

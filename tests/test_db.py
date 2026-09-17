@@ -15,6 +15,7 @@ class TestDeduplicationDB(unittest.TestCase):
         db.init_db()
 
     def tearDown(self):
+        db.close_thread_connection()
         self.patcher.stop()
         self.tmp_dir.cleanup()
 

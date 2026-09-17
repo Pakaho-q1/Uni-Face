@@ -287,5 +287,30 @@ class TestFaceService(unittest.TestCase):
         # target_face landmarks remain pure
         np.testing.assert_array_equal(mock_target_face.landmark_5, np.array([[60, 60], [80, 60], [70, 75], [65, 90], [75, 90]]))
 
+    @patch('uniface.core.service.detect')
+    def test_resolve_source_face_caching(self, mock_detect):
+        from uniface.core.service import resolve_source_face, clear_source_face_cache
+        clear_source_face_cache()
+        
+        mock_face = Face(bbox=np.array([0, 0, 100, 100]), embedding=np.ones((512,)))
+        mock_detect.return_value = [mock_face]
+        
+        source_img = np.zeros((100, 100, 3), dtype=np.uint8)
+        
+        # Call 1: should run detect
+        face1 = resolve_source_face(source_img)
+        self.assertEqual(face1, mock_face)
+        self.assertEqual(mock_detect.call_count, 1)
+        
+        # Call 2: should use cached face, detect not called again
+        face2 = resolve_source_face(source_img)
+        self.assertEqual(face2, mock_face)
+        self.assertEqual(mock_detect.call_count, 1)
+        
+        # If passed pre-resolved Face directly
+        face3 = resolve_source_face(mock_face)
+        self.assertEqual(face3, mock_face)
+        self.assertEqual(mock_detect.call_count, 1)
+
 if __name__ == '__main__':
     unittest.main()

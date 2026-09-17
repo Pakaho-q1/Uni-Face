@@ -163,19 +163,62 @@ export function SettingsPanel({ open, onClose, settings }: SettingsPanelProps) {
                 </div>
 
                 {/* Restore Source Face Toggle */}
-                <div className="flex items-center justify-between py-0.5">
-                  <div className="space-y-0.5">
-                    <label className="text-foreground">
-                      Restore Source Face
-                    </label>
-                    <p className="text-[10px] text-muted-foreground leading-tight">
-                      Enhance source before feature extraction
-                    </p>
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between py-0.5">
+                    <div className="space-y-0.5">
+                      <label className="text-foreground">
+                        Restore Source Face
+                      </label>
+                      <p className="text-[10px] text-muted-foreground leading-tight">
+                        Enhance source before feature extraction
+                      </p>
+                    </div>
+                    <Switch
+                      checked={settings.restoreSourceFace}
+                      onCheckedChange={settings.setRestoreSourceFace}
+                    />
                   </div>
-                  <Switch
-                    checked={settings.restoreSourceFace}
-                    onCheckedChange={settings.setRestoreSourceFace}
-                  />
+
+                  {settings.restoreSourceFace && (
+                    <div className="pl-3 space-y-2.5 border-l-2 border-primary/40 pt-1">
+                      <div className="space-y-1">
+                        <label className="text-[10px] text-muted-foreground">
+                          Source Restorer Model
+                        </label>
+                        <Select
+                          value={settings.restoreSourceFaceModel}
+                          onValueChange={settings.setRestoreSourceFaceModel}
+                        >
+                          <SelectTrigger className="w-full text-xs h-7">
+                            <SelectValue placeholder="Model" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {RESTORE_MODELS.map((m) => (
+                              <SelectItem key={m.id} value={m.id}>
+                                {m.label}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
+
+                      <div className="space-y-1">
+                        <div className="flex justify-between text-[10px] text-muted-foreground">
+                          <span>Restore Weight</span>
+                          <span className="font-mono text-primary">
+                            {settings.restoreSourceFaceWeight[0]}%
+                          </span>
+                        </div>
+                        <Slider
+                          value={settings.restoreSourceFaceWeight}
+                          onValueChange={settings.setRestoreSourceFaceWeight}
+                          min={10}
+                          max={100}
+                          step={1}
+                        />
+                      </div>
+                    </div>
+                  )}
                 </div>
 
                 {/* Target Hair Protection Toggle */}

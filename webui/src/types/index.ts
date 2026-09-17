@@ -204,6 +204,10 @@ export interface SettingsState {
   setFaceBoost: (v: string) => void;
   restoreSourceFace: boolean;
   setRestoreSourceFace: (v: boolean) => void;
+  restoreSourceFaceModel: string;
+  setRestoreSourceFaceModel: (v: string) => void;
+  restoreSourceFaceWeight: number[];
+  setRestoreSourceFaceWeight: (v: number[]) => void;
   targetHairProtect: boolean;
   setTargetHairProtect: (v: boolean) => void;
   

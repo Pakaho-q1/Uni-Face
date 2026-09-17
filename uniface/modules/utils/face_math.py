@@ -184,3 +184,90 @@ def apply_nms(bounding_boxes, scores, score_threshold, nms_threshold):
     bounding_boxes_norm = [ (x1, y1, x2 - x1, y2 - y1) for (x1, y1, x2, y2) in bounding_boxes ]
     keep_indices = cv2.dnn.NMSBoxes(bounding_boxes_norm, scores, score_threshold=score_threshold, nms_threshold=nms_threshold)
     return keep_indices
+
+def map_mask_between_crops(src_mask: np.ndarray, src_affine_matrix: np.ndarray, dst_affine_matrix: np.ndarray, dst_shape: tuple) -> np.ndarray:
+    """
+    Direct 2D affine mapping between two crop coordinate systems without allocating full-frame image buffers.
+    Transforms src_mask (e.g. from ffhq_512) directly to dst_shape (e.g. arcface_128 or 256/512 crop).
+    """
+    if src_mask is None or src_affine_matrix is None or dst_affine_matrix is None:
+        return np.ones(dst_shape[:2], dtype=np.float32)
+    inv_src = cv2.invertAffineTransform(src_affine_matrix)
+    if inv_src is None:
+        return np.ones(dst_shape[:2], dtype=np.float32)
+        
+    T_inv_src = np.eye(3, dtype=np.float64)
+    T_inv_src[:2] = inv_src
+    T_dst = np.eye(3, dtype=np.float64)
+    T_dst[:2] = dst_affine_matrix
+    T_direct = (T_dst @ T_inv_src)[:2]
+    
+    return cv2.warpAffine(src_mask, T_direct, (dst_shape[1], dst_shape[0]), flags=cv2.INTER_LINEAR)
+
+def check_face_needs_padding(face, frame_shape: tuple, threshold_ratio: float = 0.40, edge_margin_ratio: float = 0.04) -> bool:
+    """
+    Determines if a face is close-up/large or too close to image/bbox boundaries,
+    requiring adaptive post-crop padding before model inference.
+    """
+    if face is None or not hasattr(face, "bbox") or face.bbox is None:
+        return False
+    h, w = frame_shape[:2]
+    x1, y1, x2, y2 = face.bbox
+    bw = x2 - x1
+    bh = y2 - y1
+    
+    # 1. Large / Close-up face relative to frame
+    if (bw / max(1, w) > threshold_ratio) or (bh / max(1, h) > threshold_ratio):
+        return True
+        
+    # 2. Face bbox touching or too close to frame boundaries
+    margin_x = w * edge_margin_ratio
+    margin_y = h * edge_margin_ratio
+    if x1 <= margin_x or y1 <= margin_y or x2 >= (w - margin_x) or y2 >= (h - margin_y):
+        return True
+        
+    # 3. Check if landmarks are too close to bbox edges (tight bbox)
+    if hasattr(face, "landmark_5") and face.landmark_5 is not None:
+        lm = face.landmark_5
+        lm_min_x, lm_min_y = np.min(lm, axis=0)
+        lm_max_x, lm_max_y = np.max(lm, axis=0)
+        if (lm_min_x - x1) < bw * 0.05 or (x2 - lm_max_x) < bw * 0.05:
+            return True
+        if (lm_min_y - y1) < bh * 0.08 or (y2 - lm_max_y) < bh * 0.08:
+            return True
+            
+    return False
+
+def pad_and_resize_crop(crop_image: np.ndarray, padding_ratio: float = 0.15) -> tuple[np.ndarray, tuple[int, int, int, int]]:
+    """
+    Pads a cropped face with reflective border and resizes back to the original crop size.
+    This creates breathing room around extreme close-ups or tight boundaries before model inference.
+    Returns: (resized_input, (pad_top, pad_bottom, pad_left, pad_right))
+    """
+    if crop_image is None or padding_ratio <= 0.0:
+        return crop_image, (0, 0, 0, 0)
+    h, w = crop_image.shape[:2]
+    pad_h = int(h * padding_ratio)
+    pad_w = int(w * padding_ratio)
+    padded = cv2.copyMakeBorder(crop_image, pad_h, pad_h, pad_w, pad_w, cv2.BORDER_REFLECT_101)
+    resized = cv2.resize(padded, (w, h), interpolation=cv2.INTER_CUBIC)
+    return resized, (pad_h, pad_h, pad_w, pad_w)
+
+def unpad_crop(processed_crop: np.ndarray, pad_info: tuple[int, int, int, int], original_shape: tuple[int, int]) -> np.ndarray:
+    """
+    Reverses pad_and_resize_crop by scaling back to padded dimensions and slicing the center crop.
+    Preserves exact pixel alignment with the original affine matrix.
+    """
+    if processed_crop is None or pad_info == (0, 0, 0, 0):
+        return processed_crop
+    orig_h, orig_w = original_shape[:2]
+    pad_top, pad_bottom, pad_left, pad_right = pad_info
+    target_w = orig_w + pad_left + pad_right
+    target_h = orig_h + pad_top + pad_bottom
+    unpadded = cv2.resize(processed_crop, (target_w, target_h), interpolation=cv2.INTER_CUBIC)
+    res = unpadded[pad_top : pad_top + orig_h, pad_left : pad_left + orig_w]
+    if processed_crop.dtype == np.uint8 and res.dtype != np.uint8:
+        res = np.clip(res, 0, 255).astype(np.uint8)
+    return res
+
+

@@ -13,7 +13,7 @@ from pydantic import BaseModel
 
 from uniface.core.workspace import get_target_sets_dir, WORKSPACE_DIR
 from uniface.core.db import get_hash_path, register_hash, remove_hash
-from uniface.core.image_service import get_letterbox_thumbnail
+from uniface.modules.utils.image_io import get_letterbox_thumbnail
 from uniface.core.logging import get_logger
 
 logger = get_logger(__name__)
@@ -228,40 +228,6 @@ async def upload_to_target_set(
             raise HTTPException(status_code=500, detail=f"Upload failed: {str(e)}")
             
     return {"uploaded": uploaded}
-
-@router.post("/api/v1/system/gc")
-async def run_garbage_collection(x_client_platform: str = Header("unknown")):
-    sets_dir = get_target_sets_dir(x_client_platform)
-    pool_dir = os.path.join(sets_dir, ".pool")
-    
-    if not os.path.exists(pool_dir):
-        return {"status": "ok", "deleted_files": 0, "freed_bytes": 0}
-        
-    deleted_count = 0
-    freed_bytes = 0
-    
-    for filename in os.listdir(pool_dir):
-        file_path = os.path.join(pool_dir, filename)
-        if os.path.isfile(file_path):
-            stat = os.stat(file_path)
-            if stat.st_nlink == 1:
-                freed_bytes += stat.st_size
-                os.remove(file_path)
-                file_hash, _ = os.path.splitext(filename)
-                remove_hash(file_hash)
-                deleted_count += 1
-                
-    return {
-        "status": "ok", 
-        "deleted_files": deleted_count, 
-        "freed_bytes": freed_bytes
-    }
-
-@router.post("/api/v1/system/unload-models")
-async def unload_models_endpoint():
-    from uniface.core.model_manager import unload_all_models
-    unload_all_models()
-    return {"status": "ok", "message": "All inactive model sessions unloaded from memory"}
 
 @router.post("/api/v1/target-sets/{set_name}/delete-files")
 async def delete_target_set_files(

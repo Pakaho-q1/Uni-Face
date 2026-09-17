@@ -284,7 +284,8 @@ class TestCodeAuditOptimizations(unittest.TestCase):
             processors=["swap"],
             swap_model="inswapper_128",
             mask_types=["box"],
-            clean_source_face=False
+            clean_source_face=False,
+            target_hair_protect=False
         )
         optimize_models_for_job(cfg)
 

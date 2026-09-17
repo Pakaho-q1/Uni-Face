@@ -1,6 +1,10 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
+import { Switch } from '@/components/ui/switch';
+import { Slider } from '@/components/ui/slider';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { RESTORE_MODELS } from '@/config';
 import { Upload, X, Loader2, Trash2, Box } from 'lucide-react';
 import { toast } from 'sonner';
 import { api } from '@/services/api';
@@ -21,6 +25,11 @@ export function ModelBuilderDialog({ open, onClose, onModelBuilt, enableFaceClea
   const [selectedImageIndex, setSelectedImageIndex] = useState<number | null>(null);
   const [isBuilding, setIsBuilding] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Restore Source Face state for Model Builder
+  const [restoreSourceFace, setRestoreSourceFace] = useState(false);
+  const [restoreModel, setRestoreModel] = useState('gfpgan_1.4');
+  const [restoreWeight, setRestoreWeight] = useState(80);
 
   // Existing models state
   const [savedModels, setSavedModels] = useState<FaceModelItem[]>([]);
@@ -116,6 +125,11 @@ export function ModelBuilderDialog({ open, onClose, onModelBuilt, enableFaceClea
       const formData = new FormData();
       formData.append('name', modelName.trim());
       files.forEach(f => formData.append('files', f));
+      if (restoreSourceFace) {
+        formData.append('restore_source_face', 'true');
+        formData.append('restore_model', restoreModel);
+        formData.append('restore_weight', (restoreWeight / 100).toString());
+      }
 
       const data = await api.buildFaceModel(formData);
 
@@ -291,6 +305,66 @@ export function ModelBuilderDialog({ open, onClose, onModelBuilt, enableFaceClea
                   </div>
                 </div>
               )}
+
+              {/* Restore Source Face Options */}
+              <div className="border border-border rounded-xl p-3 bg-secondary/30 space-y-2 shrink-0">
+                <div className="flex items-center justify-between">
+                  <div className="space-y-0.5">
+                    <label className="text-xs font-medium text-foreground">
+                      Restore Source Faces
+                    </label>
+                    <p className="text-[10px] text-muted-foreground">
+                      Enhance face quality before generating embeddings
+                    </p>
+                  </div>
+                  <Switch
+                    checked={restoreSourceFace}
+                    onCheckedChange={setRestoreSourceFace}
+                    disabled={isBuilding}
+                  />
+                </div>
+
+                {restoreSourceFace && (
+                  <div className="pl-2 space-y-2 border-l-2 border-primary/40 pt-1 text-xs">
+                    <div className="space-y-1">
+                      <label className="text-[10px] text-muted-foreground">
+                        Restorer Model
+                      </label>
+                      <Select
+                        value={restoreModel}
+                        onValueChange={setRestoreModel}
+                        disabled={isBuilding}
+                      >
+                        <SelectTrigger className="w-full text-xs h-7">
+                          <SelectValue placeholder="Model" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {RESTORE_MODELS.map((m) => (
+                            <SelectItem key={m.id} value={m.id}>
+                              {m.label}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+
+                    <div className="space-y-1">
+                      <div className="flex justify-between text-[10px] text-muted-foreground">
+                        <span>Restore Weight</span>
+                        <span className="font-mono text-primary">{restoreWeight}%</span>
+                      </div>
+                      <Slider
+                        value={[restoreWeight]}
+                        onValueChange={(val) => setRestoreWeight(val[0])}
+                        min={10}
+                        max={100}
+                        step={1}
+                        disabled={isBuilding}
+                      />
+                    </div>
+                  </div>
+                )}
+              </div>
             </div>
             
             {error && (

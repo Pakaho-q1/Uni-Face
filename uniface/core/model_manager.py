@@ -106,24 +106,29 @@ def install_models(force: bool = False) -> Dict[str, int]:
 def optimize_models_for_job(job_config):
     """
     Unload any cached ONNX model sessions that are NOT needed for the current job.
-    This guarantees that when a user turns off a feature (e.g. Region, Occlusion, Restore, Face Clean),
+    This guarantees that when a user turns off a feature (e.g. Region, Occlusion, Restore, Face Boost),
     the corresponding model is immediately unloaded and VRAM is freed.
     """
     import gc
     
-    # 1. Swapper: keep only active swap models
-    keep_swappers = [job_config.swap_model]
-    if getattr(job_config, "dual_swap", False):
-        keep_swappers.append(getattr(job_config, "swap_model_2", "hyperswap_high_512"))
+    # 1. Swapper: keep only if 'swap' is in processors
     from uniface.modules.swapper.swap import unload_unused_swappers
-    unload_unused_swappers(keep_swappers)
+    if 'swap' in getattr(job_config, "processors", []):
+        keep_swappers = [job_config.swap_model]
+        if getattr(job_config, "dual_swap", False):
+            keep_swappers.append(getattr(job_config, "swap_model_2", "hyperswap_high_512"))
+        unload_unused_swappers(keep_swappers)
+    else:
+        unload_unused_swappers([])
 
-    # 2. Restorer: keep only if restore processor or staged restore is requested
+    # 2. Restorer: keep only if restore processor, staged restore, Face Boost, or source enhancement is requested
     from uniface.modules.restorer import unload_unused_restorers
     has_restore = (
-        ('restore' in job_config.processors) or 
+        ('restore' in getattr(job_config, "processors", [])) or 
         getattr(job_config, "stage1_restore", False) or 
-        getattr(job_config, "stage2_restore", False)
+        getattr(job_config, "stage2_restore", False) or
+        (getattr(job_config, "face_boost", "none") in ["256", "512"]) or
+        getattr(job_config, "restore_source_face", False)
     )
     if has_restore:
         keep_restorers = [job_config.restore_model]
@@ -133,15 +138,15 @@ def optimize_models_for_job(job_config):
     else:
         unload_unused_restorers([])
 
-    # 3. Parser: BiSeNet is needed only if 'region' in mask_types OR clean_source_face is True
+    # 3. Parser: BiSeNet is needed if 'region' in mask_types OR target_hair_protect is True
     from uniface.modules.parser import get_parser
     parser = get_parser()
-    need_bisenet = ('region' in job_config.mask_types) or getattr(job_config, "clean_source_face", False)
+    need_bisenet = ('region' in getattr(job_config, "mask_types", [])) or getattr(job_config, "target_hair_protect", True)
     if not need_bisenet:
         parser.unload_bisenet()
 
     # 4. Parser: XSeg is needed only if 'occlusion' in mask_types
-    need_xseg = ('occlusion' in job_config.mask_types)
+    need_xseg = ('occlusion' in getattr(job_config, "mask_types", []))
     if not need_xseg:
         parser.unload_xseg()
     else:
@@ -155,10 +160,12 @@ def unload_all_models():
     from uniface.modules.swapper.swap import unload_unused_swappers
     from uniface.modules.restorer import unload_unused_restorers
     from uniface.modules.parser import get_parser
+    from uniface.modules.detector import unload_detector
     
     unload_unused_swappers([])
     unload_unused_restorers([])
     parser = get_parser()
     parser.unload_bisenet()
     parser.unload_xseg()
+    unload_detector()
     gc.collect()

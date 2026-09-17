@@ -8,8 +8,14 @@ class TestNativeDetector(unittest.TestCase):
     
     @patch('onnxruntime.InferenceSession')
     def test_detector_initialization(self, mock_ort_session):
-        # Initializing the detector should create 4 ONNX sessions (yoloface, 2dfan4, arcface, genderage)
+        # Initializing the detector should create 2 ONNX sessions eagerly (yoloface, 2dfan4)
         detector = NativeDetector()
+        self.assertEqual(mock_ort_session.call_count, 2)
+        # Accessing arcface_session loads 3rd session lazily
+        _ = detector.arcface_session
+        self.assertEqual(mock_ort_session.call_count, 3)
+        # Accessing genderage_session loads 4th session lazily
+        _ = detector.genderage_session
         self.assertEqual(mock_ort_session.call_count, 4)
         
     @patch('onnxruntime.InferenceSession')
@@ -147,43 +153,15 @@ class TestNativeDetector(unittest.TestCase):
         faces = detector.detect(frame, landmark_score=0.50)
         self.assertEqual(len(faces), 0)
 
-    @patch('uniface.modules.parser.MaskParser._get_bisenet_session')
     @patch('onnxruntime.InferenceSession')
-    def test_clean_face_for_arcface(self, mock_ort_session, mock_get_bisenet):
-        mock_ort_session.side_effect = [MagicMock(), MagicMock(), MagicMock(), MagicMock()]
-        mock_bisenet = MagicMock()
-        mock_get_bisenet.return_value = mock_bisenet
+    def test_unload_detector(self, mock_ort_session):
+        from uniface.modules.detector import get_detector, unload_detector
+        import uniface.modules.detector as det_mod
         
-        # BiSeNet dummy prediction: 19 classes of size 512x512
-        dummy_pred = np.zeros((1, 19, 512, 512), dtype=np.float32)
-        # Class 1 (skin) everywhere
-        dummy_pred[0, 1, :, :] = 5.0
-        mock_bisenet.run.return_value = [dummy_pred]
-        
-        detector = NativeDetector()
-        frame = np.zeros((480, 640, 3), dtype=np.uint8)
-        landmark_5 = np.array([
-            [200, 200], [280, 200], [240, 240], [210, 280], [270, 280]
-        ], dtype=np.float32)
-        
-        # 1. Without hair on forehead
-        cleaned_frame, orig_crop, hair_mask = detector.clean_face_for_arcface(frame, landmark_5)
-        self.assertEqual(cleaned_frame.shape, frame.shape)
-        self.assertEqual(orig_crop.shape, (512, 512, 3))
-        self.assertEqual(hair_mask.shape, (512, 512))
-        self.assertEqual(np.count_nonzero(hair_mask), 0)
-        
-        # 2. With hair on forehead (class 17 in forehead region)
-        dummy_pred_hair = np.zeros((1, 19, 512, 512), dtype=np.float32)
-        dummy_pred_hair[0, 1, :, :] = 2.0
-        dummy_pred_hair[0, 17, 150:200, 200:280] = 10.0  # high confidence hair in forehead
-        mock_bisenet.run.return_value = [dummy_pred_hair]
-        
-        cleaned_frame2, orig_crop2, hair_mask2 = detector.clean_face_for_arcface(frame, landmark_5)
-        self.assertEqual(cleaned_frame2.shape, frame.shape)
-        self.assertEqual(orig_crop2.shape, (512, 512, 3))
-        self.assertEqual(hair_mask2.shape, (512, 512))
-        self.assertGreater(np.count_nonzero(hair_mask2), 0)
+        inst = get_detector()
+        self.assertIsNotNone(det_mod.detector_app)
+        unload_detector()
+        self.assertIsNone(det_mod.detector_app)
 
 if __name__ == '__main__':
     unittest.main()

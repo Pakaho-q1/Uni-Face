@@ -155,6 +155,50 @@ export const api = {
     return res.data.uploaded[0].file_id;
   },
 
+  async uploadFilesConcurrently(
+    files: File[], 
+    type: 'source' | 'target', 
+    concurrency = 3,
+    onProgress?: (completedCount: number, totalCount: number, overallPct: number) => void
+  ): Promise<string[]> {
+    if (files.length === 0) return [];
+
+    const results: string[] = new Array(files.length);
+    const progressMap = new Map<number, number>();
+    let completedCount = 0;
+
+    const reportProgress = () => {
+      if (!onProgress) return;
+      let totalPctSum = 0;
+      for (let i = 0; i < files.length; i++) {
+        totalPctSum += progressMap.get(i) || 0;
+      }
+      const overallPct = Math.round(totalPctSum / files.length);
+      onProgress(completedCount, files.length, overallPct);
+    };
+
+    let nextIndex = 0;
+    const worker = async () => {
+      while (nextIndex < files.length) {
+        const index = nextIndex++;
+        const file = files[index];
+        const fileId = await api.uploadFile(file, type, (pct) => {
+          progressMap.set(index, pct);
+          reportProgress();
+        });
+        results[index] = fileId;
+        completedCount++;
+        progressMap.set(index, 100);
+        reportProgress();
+      }
+    };
+
+    const workerCount = Math.min(concurrency, files.length);
+    const workers = Array.from({ length: workerCount }, () => worker());
+    await Promise.all(workers);
+    return results;
+  },
+
   async extractFaces(formData: FormData): Promise<{ faces: ExtractedFace[] }> {
     const res = await fetch(`${API_BASE}${ENDPOINTS.EXTRACT_FACES}`, {
       method: 'POST',

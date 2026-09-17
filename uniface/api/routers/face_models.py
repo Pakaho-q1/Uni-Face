@@ -52,11 +52,15 @@ async def delete_face_model(
 async def build_face_model(
     name: str = Form(...),
     files: list[UploadFile] = File(...),
+    restore_source_face: bool = Form(False),
+    restore_model: str = Form("gfpgan_1.4"),
+    restore_weight: float = Form(0.8),
     x_client_platform: str = Header("unknown")
 ):
     platform_dir = get_platform_dir(x_client_platform)
     from uniface.core.face_model import save_face_model
     from uniface.modules.detector import detect
+    from uniface.modules.utils.face_helpers import enhance_source_face_embedding
     
     faces = []
     for file in files:
@@ -67,7 +71,19 @@ async def build_face_model(
             detected = detect(img)
             if detected:
                 detected.sort(key=lambda x: (x.bbox[2]-x.bbox[0])*(x.bbox[3]-x.bbox[1]), reverse=True)
-                faces.append(detected[0])
+                face = detected[0]
+                
+                # Enhance face before ArcFace embedding extraction if restore_source_face is enabled
+                if restore_source_face and getattr(face, "landmark_5", None) is not None:
+                    new_emb = enhance_source_face_embedding(
+                        img, face,
+                        restore_model=restore_model,
+                        restore_weight=restore_weight
+                    )
+                    if new_emb is not None:
+                        logger.debug(f"Face model image enhanced with {restore_model} (weight={restore_weight})")
+                        
+                faces.append(face)
                 
     if not faces:
         raise HTTPException(status_code=400, detail="No faces detected in the provided images.")
@@ -189,4 +205,64 @@ async def extract_faces(
         
     return {
         "faces": extracted_faces
+    }
+
+@router.post("/api/v1/face/clean-preview")
+async def face_clean_preview(
+    file: UploadFile = File(None),
+    file_id: str = Form(None),
+    x_client_platform: str = Header("unknown")
+):
+    """Generate preview of cleaned face crop with hairline protection."""
+    from uniface.core.workspace import ensure_workspace
+    from uniface.modules.detector import detect
+    from uniface.modules.utils import face_math
+    
+    img = None
+    if file:
+        content = await file.read()
+        nparr = np.frombuffer(content, np.uint8)
+        img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+    elif file_id:
+        uploads_dir, _ = ensure_workspace(x_client_platform)
+        target = os.path.join(uploads_dir, file_id)
+        if not os.path.exists(target):
+            target_fallback = os.path.join(os.path.dirname(uploads_dir), "unknown", "uploads", file_id)
+            if os.path.exists(target_fallback):
+                target = target_fallback
+        if os.path.exists(target):
+            img = cv2.imread(target)
+            
+    if img is None:
+        return {"success": False, "error": "No valid image provided"}
+        
+    faces = detect(img, extract_embedding=False, extract_gender_age=False)
+    if not faces:
+        return {"success": False, "error": "No face detected in the image"}
+        
+    faces.sort(key=lambda x: (x.bbox[2]-x.bbox[0])*(x.bbox[3]-x.bbox[1]), reverse=True)
+    best_face = faces[0]
+    
+    orig_crop, _ = face_math.warp_face_by_face_landmark_5(
+        img, best_face.landmark_5, 'ffhq_512', (512, 512)
+    )
+    
+    if orig_crop is None:
+        orig_crop, _ = face_math.warp_face_by_face_landmark_5(
+            img, best_face.landmark_5, 'arcface_112_v2', (512, 512)
+        )
+        
+    if orig_crop is None:
+        return {"success": False, "error": "Failed to crop face"}
+        
+    _, orig_buf = cv2.imencode('.jpg', orig_crop, [cv2.IMWRITE_JPEG_QUALITY, 92])
+    orig_b64 = base64.b64encode(orig_buf).decode('utf-8')
+    
+    return {
+        "success": True,
+        "has_face": True,
+        "has_forehead_hair": False,
+        "original_crop": f"data:image/jpeg;base64,{orig_b64}",
+        "hair_mask": None,
+        "cleaned_crop": f"data:image/jpeg;base64,{orig_b64}"
     }

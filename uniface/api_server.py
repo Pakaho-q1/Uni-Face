@@ -6,26 +6,11 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import RedirectResponse
 import uvicorn
 
-# --- TRT Support: Auto-inject TensorRT libs into PATH ---
-if sys.platform == 'win32':
-    trt_path = os.path.join(sys.prefix, 'Lib', 'site-packages', 'tensorrt_libs')
-    if os.path.exists(trt_path):
-        os.environ['PATH'] = trt_path + os.pathsep + os.environ.get('PATH', '')
-    else:
-        python_id = f"python{sys.version_info.major}.{sys.version_info.minor}"
-        trt_path = os.path.join(sys.prefix, 'lib', python_id, 'site-packages', 'tensorrt_libs')
-        if os.path.exists(trt_path):
-            os.environ['LD_LIBRARY_PATH'] = trt_path + os.pathsep + os.environ.get('LD_LIBRARY_PATH', '')
-
-# --- Disable BLAS/OMP threading to prevent CPU thrashing during multi-thread processing ---
-os.environ["OMP_NUM_THREADS"] = "1"
-os.environ["OPENBLAS_NUM_THREADS"] = "1"
-os.environ["MKL_NUM_THREADS"] = "1"
-os.environ["VECLIB_MAXIMUM_THREADS"] = "1"
-os.environ["NUMEXPR_NUM_THREADS"] = "1"
-
 # Ensure we can import uniface modules
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+
+from uniface.core.bootstrap import initialize_environment
+initialize_environment()
 
 from uniface.core.state import state
 from uniface.core.db import init_db
@@ -41,19 +26,6 @@ init_db()
 
 app = FastAPI(title="Uni-Face API", version="1.0.0")
 
-# Register NumPy encoders globally to prevent jsonable_encoder TypeError
-try:
-    import numpy as np
-    from fastapi.encoders import ENCODERS_BY_TYPE
-    ENCODERS_BY_TYPE[np.bool_] = bool
-    for _int_t in (np.int8, np.int16, np.int32, np.int64, np.uint8, np.uint16, np.uint32, np.uint64):
-        ENCODERS_BY_TYPE[_int_t] = int
-    for _float_t in (np.float16, np.float32, np.float64):
-        ENCODERS_BY_TYPE[_float_t] = float
-    ENCODERS_BY_TYPE[np.ndarray] = lambda x: x.tolist()
-except ImportError:
-    pass
-
 # CORS Middleware
 app.add_middleware(
     CORSMiddleware,
@@ -67,6 +39,7 @@ app.add_middleware(
 app.add_middleware(BasicAuthMiddleware)
 
 # --- Include Routers ---
+from uniface.api.routers.system import router as system_router
 from uniface.api.routers.upload import router as upload_router
 from uniface.api.routers.target_sets import router as target_sets_router
 from uniface.api.routers.jobs import router as jobs_router
@@ -74,6 +47,7 @@ from uniface.api.routers.face_models import router as face_models_router
 from uniface.api.routers.history import router as history_router
 from uniface.api.routers.immich import router as immich_router
 
+app.include_router(system_router)
 app.include_router(upload_router)
 app.include_router(target_sets_router)
 app.include_router(jobs_router)

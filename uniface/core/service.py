@@ -1,12 +1,17 @@
 import numpy as np
 import cv2
 import base64
+import copy
 from typing import Union, Dict, Optional
 from uniface.core.types import Face, JobConfig
 from uniface.core.state import state
 from uniface.core.logging import get_logger
 
-from uniface.modules.detector import detect
+from uniface.modules import detector
+
+def detect(*args, **kwargs):
+    return detector.detect(*args, **kwargs)
+
 from uniface.modules.swapper.swap import swap
 from uniface.modules.restorer import restore
 from uniface.modules.compositor import composite
@@ -53,6 +58,92 @@ def filter_and_sort_target_faces(
         candidates.sort(key=lambda x: (x.bbox[2] - x.bbox[0]) * (x.bbox[3] - x.bbox[1]), reverse=True)
         
     return candidates
+
+_SOURCE_FACE_CACHE: dict[tuple, Face] = {}
+
+def clear_source_face_cache():
+    global _SOURCE_FACE_CACHE
+    _SOURCE_FACE_CACHE.clear()
+
+def resolve_source_face(
+    source: Union[np.ndarray, Face, Dict], 
+    job_config: Optional[JobConfig] = None,
+    verbose: bool = True
+) -> Optional[Face]:
+    """
+    Resolve, detect, and enhance source face once (SSOT).
+    Caches detection on the source ndarray or returns pre-computed Face instances.
+    """
+    if source is None:
+        return None
+        
+    if isinstance(source, Face):
+        return source
+        
+    if isinstance(source, dict):
+        if "embeddings" in source and len(source["embeddings"]) > 0:
+            embs = source["embeddings"]
+            mean_emb = np.mean(embs, axis=0).astype(np.float32)
+            return Face(bbox=np.array([0, 0, 0, 0]), embedding=mean_emb)
+        return None
+
+    if isinstance(source, str):
+        if os.path.exists(source):
+            img = cv2.imread(source)
+            if img is not None:
+                source = img
+            else:
+                return None
+        else:
+            return None
+        
+    cfg = job_config or JobConfig.from_state(state)
+    det_score = getattr(cfg, "face_detector_score", 0.65)
+    lm_score = getattr(cfg, "face_landmark_score", 0.50)
+    res_src = bool(getattr(cfg, "restore_source_face", False))
+    res_model = str(getattr(cfg, "restore_source_face_model", "gfpgan_1.4"))
+    res_weight = float(getattr(cfg, "restore_source_face_weight", 0.8))
+    
+    if isinstance(source, np.ndarray):
+        cache_key = (id(source), res_src, res_model, res_weight, det_score, lm_score)
+        if cache_key in _SOURCE_FACE_CACHE:
+            return _SOURCE_FACE_CACHE[cache_key]
+
+        source_faces = detect(
+            source,
+            extract_embedding=True,
+            extract_gender_age=False,
+            detector_score=det_score,
+            landmark_score=lm_score,
+            clean_source_face=False
+        )
+        if not source_faces:
+            if verbose:
+                logger.debug("No face detected in source image.")
+            return None
+            
+        source_faces.sort(key=lambda x: (x.bbox[2]-x.bbox[0])*(x.bbox[3]-x.bbox[1]), reverse=True)
+        source_face = source_faces[0]
+
+        # ReActor Source Face Enhancement (restore source face before ArcFace embedding)
+        if res_src and getattr(source_face, "landmark_5", None) is not None:
+            from uniface.modules.utils.face_helpers import enhance_source_face_embedding
+            new_emb = enhance_source_face_embedding(
+                source, source_face,
+                restore_model=res_model,
+                restore_weight=res_weight,
+                providers=cfg.providers
+            )
+            if new_emb is not None and verbose:
+                logger.debug(f"Source face successfully enhanced with restorer ({res_model}, weight={res_weight}) prior to embedding extraction.")
+                
+        if len(_SOURCE_FACE_CACHE) > 32:
+            _SOURCE_FACE_CACHE.clear()
+        _SOURCE_FACE_CACHE[cache_key] = source_face
+            
+        return source_face
+        
+    return None
 
 class FaceService:
     def __init__(self):
@@ -130,41 +221,7 @@ class FaceService:
             target_face = sorted_faces[0] if sorted_faces else target_faces[0]
         
         # 2. Get/Detect Source Face
-        if isinstance(source, np.ndarray):
-            source_faces = detect(
-                source,
-                extract_embedding=True,
-                extract_gender_age=False,
-                detector_score=det_score,
-                landmark_score=lm_score,
-                clean_source_face=False
-            )
-            if not source_faces:
-                if verbose:
-                    logger.debug("No face detected in source image.")
-                return None, None
-            source_faces.sort(key=lambda x: (x.bbox[2]-x.bbox[0])*(x.bbox[3]-x.bbox[1]), reverse=True)
-            source_face = source_faces[0]
-
-            # ReActor Source Face Enhancement (restore source face before ArcFace embedding)
-            if getattr(cfg, "restore_source_face", False) and getattr(source_face, "landmark_5", None) is not None:
-                try:
-                    from uniface.modules.restorer import restore_crop
-                    from uniface.modules.utils import face_math
-                    src_crop, _ = face_math.warp_face_by_face_landmark_5(source, source_face.landmark_5, 'ffhq_512', (512, 512))
-                    if src_crop is not None:
-                        eff_res_model = getattr(cfg, "restore_model", "gfpgan_1.4")
-                        enhanced_src = restore_crop(src_crop, weight=0.8, blend=0.7, restore_model=eff_res_model, providers=cfg.providers)
-                        from uniface.modules.detector import get_detector
-                        det_inst = get_detector()
-                        new_emb = det_inst._calculate_embedding(enhanced_src, face_math.WARP_TEMPLATE_SET['ffhq_512'] * 512.0)
-                        if new_emb is not None:
-                            source_face.embedding = new_emb
-                            if verbose:
-                                logger.debug("Source face successfully enhanced with restorer prior to embedding extraction.")
-                except Exception as e:
-                    logger.debug(f"Restore source face skipped: {e}")
-        elif isinstance(source, dict) and "embeddings" in source:
+        if isinstance(source, dict) and "embeddings" in source:
             # Dynamic Selection Logic
             target_emb = target_face.embedding
             if target_emb is None:
@@ -187,8 +244,12 @@ class FaceService:
             
             # Create a dummy Face object with the best embedding
             source_face = Face(bbox=np.array([0,0,0,0]), embedding=best_emb)
-        else:
+        elif isinstance(source, Face):
             source_face = source
+        else:
+            source_face = resolve_source_face(source, cfg, verbose=verbose)
+            if source_face is None:
+                return None, None
             
         return source_face, target_face
 

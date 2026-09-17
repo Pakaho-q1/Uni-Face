@@ -146,13 +146,19 @@ async def download_job(job_id: str):
         
     output_path = job["output_path"]
     if not os.path.exists(output_path):
-        base, ext = os.path.splitext(output_path)
-        percent = int(job.get("progress", 0))
-        partial_path = f"{base}_{percent}%{ext}"
-        if os.path.exists(partial_path):
-            output_path = partial_path
+        d = os.path.dirname(output_path)
+        b = os.path.basename(output_path)
+        temp_cand = os.path.join(d, f"temp_{b}")
+        if os.path.exists(temp_cand):
+            output_path = temp_cand
         else:
-            raise HTTPException(status_code=404, detail="File not ready")
+            base, ext = os.path.splitext(output_path)
+            percent = int(job.get("progress", 0))
+            partial_path = f"{base}_{percent}%{ext}"
+            if os.path.exists(partial_path):
+                output_path = partial_path
+            else:
+                raise HTTPException(status_code=404, detail="File not ready")
             
     media_type, _ = mimetypes.guess_type(output_path)
     if not media_type:

@@ -3,10 +3,14 @@ import queue
 import threading
 import logging
 from typing import Dict, Any, List, Optional
+import cv2
+import numpy as np
 
-from uniface.core.types import JobConfig
+from uniface.core.types import Face, JobConfig
 from uniface.core.state import state
 from uniface.core.service import service_app
+from uniface.modules.utils import face_math
+from uniface.modules.parser import get_combined_mask
 
 logger = logging.getLogger(__name__)
 
@@ -24,11 +28,13 @@ class SwarmEngine:
             "out": queue.Queue(maxsize=queue_size * 2)
         }
         
+        # ONNX Runtime InferenceSession.Run() is thread-safe for all providers
+        # (CPU, CUDA, TensorRT). No artificial serialization needed here.
         self.stage_concurrency = {
             "detect": max(1, max_workers // 2),
-            "swap": max(1, max_workers // 2),
+            "swap":   max(1, max_workers // 2),
             "restore": max(1, max_workers // 2),
-            "color": max(1, max_workers // 2)
+            "color":  max(1, max_workers // 2)
         }
         
         self.stage_active = {
@@ -90,6 +96,36 @@ class SwarmEngine:
             if 'color' in self.processors: self.queues["color"].put(None)
             else: self.queues["out"].put(None)
 
+    def _paste_back_final(self, target_face: Face, crop: np.ndarray, affine_matrix: np.ndarray, frame: np.ndarray) -> np.ndarray:
+        """Helper to perform single final paste-back to full frame at the end of the pipeline."""
+        if crop is None or frame is None or affine_matrix is None:
+            return frame
+
+        boost_mode = getattr(self.config, "face_boost", "none")
+        if boost_mode in ["256", "512"]:
+            boost_size = int(boost_mode)
+            scale = boost_size / float(crop.shape[0])
+            if scale != 1.0:
+                crop = cv2.resize(crop, (boost_size, boost_size), interpolation=cv2.INTER_CUBIC)
+            scaled_matrix = affine_matrix.copy() * scale
+            crop_mask = get_combined_mask(
+                frame, crop, self.config.mask_types, target_face, scaled_matrix,
+                mask_padding=getattr(self.config, "mask_padding", None),
+                mask_blur=getattr(self.config, "mask_blur", None),
+                mask_regions=getattr(self.config, "mask_regions", None),
+                target_hair_protect=getattr(self.config, "target_hair_protect", True)
+            )
+            return face_math.paste_back(frame, crop, crop_mask, scaled_matrix)
+
+        crop_mask = get_combined_mask(
+            frame, crop, self.config.mask_types, target_face, affine_matrix,
+            mask_padding=getattr(self.config, "mask_padding", None),
+            mask_blur=getattr(self.config, "mask_blur", None),
+            mask_regions=getattr(self.config, "mask_regions", None),
+            target_hair_protect=getattr(self.config, "target_hair_protect", True)
+        )
+        return face_math.paste_back(frame, crop, crop_mask, affine_matrix)
+
     def worker_detect(self):
         while not self.abort_event.is_set():
             if not self.wait_for_slot("detect"): break
@@ -105,14 +141,22 @@ class SwarmEngine:
                     if source_face is None or target_face is None:
                         self.queues["out"].put((frame_idx, frame))
                     else:
-                        if 'swap' in self.processors:
-                            self.queues["swap"].put((frame_idx, source_face, target_face, frame))
-                        elif 'restore' in self.processors:
-                            self.queues["restore"].put((frame_idx, target_face, frame, frame))
-                        elif 'color' in self.processors:
-                            self.queues["color"].put((frame_idx, target_face, frame, frame))
-                        else:
+                        # Single-Pass: Warp target face into 512x512 crop once
+                        crop_512, affine_matrix = face_math.warp_face_by_face_landmark_5(
+                            frame, target_face.landmark_5, 'ffhq_512', (512, 512)
+                        )
+                        if crop_512 is None or affine_matrix is None:
                             self.queues["out"].put((frame_idx, frame))
+                        else:
+                            orig_crop = crop_512.copy()
+                            if 'swap' in self.processors:
+                                self.queues["swap"].put((frame_idx, source_face, target_face, crop_512, orig_crop, affine_matrix, frame))
+                            elif 'restore' in self.processors:
+                                self.queues["restore"].put((frame_idx, target_face, crop_512, orig_crop, affine_matrix, frame))
+                            elif 'color' in self.processors:
+                                self.queues["color"].put((frame_idx, target_face, crop_512, orig_crop, affine_matrix, frame))
+                            else:
+                                self.queues["out"].put((frame_idx, frame))
                 except Exception as e:
                     logger.error(f"Detect failed: {e}", exc_info=True)
                     self.queues["out"].put((frame_idx, frame))
@@ -131,47 +175,58 @@ class SwarmEngine:
                     self._forward_none("swap")
                     break
                 
-                frame_idx, source_face, target_face, frame = task
+                frame_idx, source_face, target_face, crop, orig_crop, affine_matrix, frame = task
                 try:
-                    # Stage 1 Swap
-                    res_frame = service_app.run_swap(
-                        source_face, target_face, frame.copy(),
+                    from uniface.modules.swapper.swap import swap_crop
+                    # Stage 1 Swap in crop space
+                    crop = swap_crop(
+                        source_face=source_face,
+                        crop=crop,
                         swap_model=self.config.swap_model,
                         swap_weight=self.config.swap_weight,
-                        job_config=self.config
+                        target_face=target_face,
+                        providers=self.config.providers
                     )
                     
                     # Stage 1 Intermediate Restore (if enabled)
                     if getattr(self.config, "stage1_restore", False):
-                        res_frame = service_app.run_restore(
-                            target_face, res_frame,
-                            restore_model=self.config.restore_model,
+                        from uniface.modules.restorer import restore_crop
+                        eff_blend = (self.config.restore_blend / 100.0) if self.config.restore_blend > 1.0 else self.config.restore_blend
+                        crop = restore_crop(
+                            crop_image=crop,
                             weight=self.config.restore_weight,
-                            blend=self.config.restore_blend,
-                            job_config=self.config,
-                            verbose=False
+                            blend=eff_blend,
+                            restore_model=self.config.restore_model,
+                            providers=self.config.providers
                         )
                         
                     # Stage 2 Swap (if dual_swap enabled)
                     if getattr(self.config, "dual_swap", False):
-                        res_frame = service_app.run_swap(
-                            source_face, target_face, res_frame,
-                            swap_model=self.config.swap_model_2,
-                            swap_weight=self.config.swap_weight_2,
-                            job_config=self.config
+                        crop = swap_crop(
+                            source_face=source_face,
+                            crop=crop,
+                            swap_model=getattr(self.config, "swap_model_2", "hyperswap_high_512"),
+                            swap_weight=getattr(self.config, "swap_weight_2", 0.8),
+                            target_face=target_face,
+                            providers=self.config.providers
                         )
                         
                     # Determine if final restore is needed
                     if getattr(self.config, "dual_swap", False):
                         need_final_restore = getattr(self.config, "stage2_restore", False)
                     else:
-                        need_final_restore = ('restore' in self.processors and not getattr(self.config, "stage1_restore", False))
+                        need_final_restore = (
+                            'restore' in self.processors and 
+                            not getattr(self.config, "stage1_restore", False) and 
+                            getattr(self.config, "face_boost", "none") == "none"
+                        )
                         
                     if need_final_restore:
-                        self.queues["restore"].put((frame_idx, target_face, res_frame, frame))
+                        self.queues["restore"].put((frame_idx, target_face, crop, orig_crop, affine_matrix, frame))
                     elif 'color' in self.processors:
-                        self.queues["color"].put((frame_idx, target_face, res_frame, frame))
+                        self.queues["color"].put((frame_idx, target_face, crop, orig_crop, affine_matrix, frame))
                     else:
+                        res_frame = self._paste_back_final(target_face, crop, affine_matrix, frame)
                         self.queues["out"].put((frame_idx, res_frame))
                 except Exception as e:
                     logger.error(f"Swap failed: {e}", exc_info=True)
@@ -191,33 +246,34 @@ class SwarmEngine:
                     self._forward_none("restore")
                     break
                 
-                frame_idx, target_face, current_frame, orig_frame = task
+                frame_idx, target_face, crop, orig_crop, affine_matrix, frame = task
                 try:
+                    from uniface.modules.restorer import restore_crop
                     if getattr(self.config, "dual_swap", False):
-                        res_frame = service_app.run_restore(
-                            target_face, current_frame,
-                            restore_model=self.config.restore_model_2,
-                            weight=self.config.restore_weight_2,
-                            blend=self.config.restore_blend_2,
-                            job_config=self.config,
-                            verbose=False
-                        )
+                        m = getattr(self.config, "restore_model_2", "gfpgan_1.4")
+                        w = getattr(self.config, "restore_weight_2", 1.0)
+                        b = getattr(self.config, "restore_blend_2", 100)
                     else:
-                        res_frame = service_app.run_restore(
-                            target_face, current_frame,
-                            restore_model=self.config.restore_model,
-                            weight=self.config.restore_weight,
-                            blend=self.config.restore_blend,
-                            job_config=self.config,
-                            verbose=False
-                        )
+                        m = self.config.restore_model
+                        w = self.config.restore_weight
+                        b = self.config.restore_blend
+                    eff_blend = (b / 100.0) if b > 1.0 else b
+                    crop = restore_crop(
+                        crop_image=crop,
+                        weight=w,
+                        blend=eff_blend,
+                        restore_model=m,
+                        providers=self.config.providers
+                    )
+                    
                     if 'color' in self.processors:
-                        self.queues["color"].put((frame_idx, target_face, res_frame, orig_frame))
+                        self.queues["color"].put((frame_idx, target_face, crop, orig_crop, affine_matrix, frame))
                     else:
+                        res_frame = self._paste_back_final(target_face, crop, affine_matrix, frame)
                         self.queues["out"].put((frame_idx, res_frame))
                 except Exception as e:
                     logger.error(f"Restore failed: {e}", exc_info=True)
-                    self.queues["out"].put((frame_idx, orig_frame))
+                    self.queues["out"].put((frame_idx, frame))
                 self.queues["restore"].task_done()
             except queue.Empty:
                 pass
@@ -233,13 +289,15 @@ class SwarmEngine:
                     self.queues["out"].put(None)
                     break
                 
-                frame_idx, target_face, current_frame, orig_frame = task
+                frame_idx, target_face, crop, orig_crop, affine_matrix, frame = task
                 try:
-                    res_frame = service_app.run_color(target_face, current_frame, orig_frame, job_config=self.config, verbose=False)
+                    from uniface.modules.compositor import compositor_app
+                    crop = compositor_app.conditional_match_color(orig_crop, crop)
+                    res_frame = self._paste_back_final(target_face, crop, affine_matrix, frame)
                     self.queues["out"].put((frame_idx, res_frame))
                 except Exception as e:
                     logger.error(f"Color failed: {e}", exc_info=True)
-                    self.queues["out"].put((frame_idx, orig_frame))
+                    self.queues["out"].put((frame_idx, frame))
                 self.queues["color"].task_done()
             except queue.Empty:
                 pass

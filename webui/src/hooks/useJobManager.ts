@@ -21,6 +21,7 @@ export function useJobManager(onJobComplete?: () => void) {
     targetType: 'image',
   });
   const wsRef = useRef<WebSocket | null>(null);
+  const lastPreviewTimeRef = useRef<number>(0);
 
   const connectWebSocket = useCallback((jobId: string) => {
     if (wsRef.current) wsRef.current.close();
@@ -38,18 +39,11 @@ export function useJobManager(onJobComplete?: () => void) {
           return;
         }
 
-        setState(prev => ({
-          ...prev,
-          progress: data.progress || 0,
-          framesDone: data.frames_done || 0,
-          totalFrames: data.total_frames || 0,
-          ...(data.preview_image ? { 
-            targetPreview: data.preview_image,
-            targetType: 'image'
-          } : {})
-        }));
+        const isFinished = data.status === "completed" || data.status === "failed" || data.status === "cancelled";
+        const now = performance.now();
+        const shouldUpdatePreview = !data.preview_image || (now - lastPreviewTimeRef.current >= 66); // ~15 FPS preview throttle
 
-        if (data.status === "completed" || data.status === "failed" || data.status === "cancelled") {
+        if (isFinished) {
           let finalPreview = '';
           if (data.status === "completed" && data.output_path) {
             const filename = data.output_path.split(/[/\\]/).pop();
@@ -61,9 +55,30 @@ export function useJobManager(onJobComplete?: () => void) {
             toast.info("Job Cancelled");
           }
           
-          setState(prev => ({ ...prev, running: false, targetPreview: finalPreview || prev.targetPreview }));
+          setState(prev => ({ 
+            ...prev, 
+            running: false, 
+            progress: data.progress ?? prev.progress,
+            framesDone: data.frames_done ?? prev.framesDone,
+            totalFrames: data.total_frames ?? prev.totalFrames,
+            targetPreview: finalPreview || prev.targetPreview 
+          }));
           if (onJobComplete) onJobComplete();
           ws.close();
+        } else {
+          if (data.preview_image && shouldUpdatePreview) {
+            lastPreviewTimeRef.current = now;
+          }
+          setState(prev => ({
+            ...prev,
+            progress: data.progress ?? prev.progress,
+            framesDone: data.frames_done ?? prev.framesDone,
+            totalFrames: data.total_frames ?? prev.totalFrames,
+            ...(data.preview_image && shouldUpdatePreview ? { 
+              targetPreview: data.preview_image,
+              targetType: 'image'
+            } : {})
+          }));
         }
       } catch (e) {
         console.error("WS parse error", e);
@@ -111,30 +126,33 @@ export function useJobManager(onJobComplete?: () => void) {
       
       const uploadTargets = targetType === "upload" ? (targetFilesOrIds as File[]) : [];
       const setTargets = targetType === "set" ? (targetFilesOrIds as string[]) : [];
-      
-      const totalFiles = uploadTargets.length + (sourceType === "image" && sourceFileOrModelId instanceof File ? 1 : 0);
-      let filesCompleted = 0;
-      let currentFileProgress = 0;
-      
-      const updateOverallProgress = (pct: number) => {
-        if (totalFiles === 0) return;
-        currentFileProgress = pct;
-        const overall = Math.round(((filesCompleted * 100) + currentFileProgress) / totalFiles);
-        setState(prev => ({ ...prev, uploadProgress: overall }));
-      };
+      const hasSourceFile = sourceType === "image" && sourceFileOrModelId instanceof File;
+      const totalFiles = uploadTargets.length + (hasSourceFile ? 1 : 0);
 
-      if (sourceType === "image" && sourceFileOrModelId instanceof File) {
-        sourceId = await api.uploadFile(sourceFileOrModelId, "source", updateOverallProgress);
-        filesCompleted++;
+      if (hasSourceFile) {
+        sourceId = await api.uploadFile(sourceFileOrModelId, "source", (pct) => {
+          if (totalFiles <= 1) {
+            setState(prev => ({ ...prev, uploadProgress: pct }));
+          } else {
+            const overall = Math.round(pct / totalFiles);
+            setState(prev => ({ ...prev, uploadProgress: overall }));
+          }
+        });
       }
 
       let targetIds: string[] = [];
       if (targetType === "upload") {
-        for (const tf of uploadTargets) {
-          const tId = await api.uploadFile(tf, "target", updateOverallProgress);
-          targetIds.push(tId);
-          filesCompleted++;
-        }
+        const sourceWeight = hasSourceFile ? (1 / totalFiles) : 0;
+        const targetWeight = totalFiles > 0 ? (uploadTargets.length / totalFiles) : 1;
+        targetIds = await api.uploadFilesConcurrently(
+          uploadTargets, 
+          "target", 
+          3, 
+          (_completed, _total, overallPct) => {
+            const currentTotal = Math.round((sourceWeight * 100) + (targetWeight * overallPct));
+            setState(prev => ({ ...prev, uploadProgress: Math.min(100, currentTotal) }));
+          }
+        );
       } else {
         targetIds = setTargets;
       }

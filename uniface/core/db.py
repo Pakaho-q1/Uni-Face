@@ -7,11 +7,51 @@ from uniface.core.config import ROOT_DIR
 
 _db_lock = threading.Lock()
 _db_path = os.path.join(ROOT_DIR, "workspace", "uniface.db")
+_local = threading.local()
+
+def _is_connection_open(conn):
+    if conn is None:
+        return False
+    try:
+        conn.total_changes
+        return True
+    except (sqlite3.ProgrammingError, sqlite3.OperationalError):
+        return False
 
 def _get_connection():
-    conn = sqlite3.connect(_db_path)
-    conn.row_factory = sqlite3.Row
+    current_path = getattr(_local, "db_path", None)
+    conn = getattr(_local, "connection", None)
+    if conn is not None:
+        if current_path != _db_path or not _is_connection_open(conn):
+            try:
+                conn.close()
+            except Exception:
+                pass
+            conn = None
+            _local.connection = None
+            _local.db_path = None
+
+    if conn is None:
+        conn = sqlite3.connect(_db_path, timeout=30.0)
+        conn.row_factory = sqlite3.Row
+        try:
+            conn.execute('PRAGMA journal_mode=WAL;')
+            conn.execute('PRAGMA synchronous=NORMAL;')
+        except Exception:
+            pass
+        _local.connection = conn
+        _local.db_path = _db_path
     return conn
+
+def close_thread_connection():
+    conn = getattr(_local, "connection", None)
+    if conn is not None:
+        try:
+            conn.close()
+        except Exception:
+            pass
+        _local.connection = None
+        _local.db_path = None
 
 def init_db():
     os.makedirs(os.path.dirname(_db_path), exist_ok=True)
@@ -64,7 +104,6 @@ def init_db():
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_jobs_platform ON jobs(platform);')
         
         conn.commit()
-        conn.close()
 
 # --- Target Hashes Operations ---
 
@@ -75,7 +114,6 @@ def get_hash_path(file_hash: str) -> Optional[str]:
         cursor = conn.cursor()
         cursor.execute('SELECT pool_path FROM target_hashes WHERE hash = ?', (file_hash,))
         result = cursor.fetchone()
-        conn.close()
         if result:
             return result["pool_path"]
         return None
@@ -90,7 +128,6 @@ def register_hash(file_hash: str, pool_path: str, size: int):
             (file_hash, pool_path, size)
         )
         conn.commit()
-        conn.close()
 
 def remove_hash(file_hash: str):
     """Removes a hash from the registry (e.g. if the pool file is deleted)."""
@@ -99,7 +136,6 @@ def remove_hash(file_hash: str):
         cursor = conn.cursor()
         cursor.execute('DELETE FROM target_hashes WHERE hash = ?', (file_hash,))
         conn.commit()
-        conn.close()
 
 # --- Jobs CRUD Operations ---
 
@@ -133,7 +169,6 @@ def create_job_record(
         conn.commit()
         cursor.execute('SELECT * FROM jobs WHERE id = ?', (job_id,))
         row = cursor.fetchone()
-        conn.close()
         return dict(row) if row else {}
 
 def update_job_record(job_id: str, updates: Dict[str, Any]) -> bool:
@@ -169,7 +204,6 @@ def update_job_record(job_id: str, updates: Dict[str, Any]) -> bool:
         cursor.execute(query, params)
         conn.commit()
         affected = cursor.rowcount
-        conn.close()
         return affected > 0
 
 def get_job_record(job_id: str) -> Optional[Dict[str, Any]]:
@@ -179,7 +213,6 @@ def get_job_record(job_id: str) -> Optional[Dict[str, Any]]:
         cursor = conn.cursor()
         cursor.execute('SELECT * FROM jobs WHERE id = ?', (job_id,))
         row = cursor.fetchone()
-        conn.close()
         return dict(row) if row else None
 
 def list_job_records(
@@ -215,7 +248,6 @@ def list_job_records(
         cursor = conn.cursor()
         cursor.execute(query, params)
         rows = cursor.fetchall()
-        conn.close()
         return [dict(r) for r in rows]
 
 def get_jobs_count(platform: Optional[str] = None, status: Optional[str] = None) -> int:
@@ -243,7 +275,6 @@ def get_jobs_count(platform: Optional[str] = None, status: Optional[str] = None)
         cursor = conn.cursor()
         cursor.execute(query, params)
         count = cursor.fetchone()[0]
-        conn.close()
         return count
 
 def get_active_jobs_count(platform: Optional[str] = None) -> int:
@@ -258,7 +289,6 @@ def delete_job_record(job_id: str) -> bool:
         cursor.execute('DELETE FROM jobs WHERE id = ?', (job_id,))
         conn.commit()
         affected = cursor.rowcount
-        conn.close()
         return affected > 0
 
 def clear_completed_job_records(platform: Optional[str] = None) -> int:
@@ -275,6 +305,5 @@ def clear_completed_job_records(platform: Optional[str] = None) -> int:
         cursor.execute(query, params)
         conn.commit()
         affected = cursor.rowcount
-        conn.close()
         return affected
 

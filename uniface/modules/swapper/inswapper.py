@@ -1,184 +1,28 @@
-import cv2
-import numpy as np
-import onnx
-import onnxruntime
 from typing import Optional, List, Any
-
-from uniface.core.types import Face
+import onnx
 from uniface.core.config import MODEL_PATHS
 from uniface.core.state import state
-from uniface.core.logging import get_logger
-from uniface.modules.utils import face_math
-from uniface.modules.swapper.base import BaseSwapper
+from uniface.modules.swapper.base import BaseOnnxSwapper
 
-logger = get_logger(__name__)
-
-class Inswapper(BaseSwapper):
+class Inswapper(BaseOnnxSwapper):
     """
     Native implementation of Inswapper 128.
     """
-
     def __init__(self, model_key: Optional[str] = None, providers: Optional[List[Any]] = None):
-        if providers:
-            self.providers = [p for p in providers if p is not None]
-        else:
-            self.providers = [p for p in state.providers if p is not None] if getattr(state, "providers", None) else ["CPUExecutionProvider"]
-        if not self.providers:
-            self.providers = ["CPUExecutionProvider"]
+        key = model_key or getattr(state, "swap_model", "inswapper_128")
+        if key not in MODEL_PATHS:
+            key = "inswapper_128"
             
-        model_key = model_key or state.swap_model
-        if model_key not in MODEL_PATHS:
-            model_key = "inswapper_128"
-            
-        model_path = str(MODEL_PATHS[model_key])
-        provider_names = [p if isinstance(p, str) else p[0] for p in self.providers if p is not None and (isinstance(p, str) or (isinstance(p, (list, tuple)) and len(p) > 0))]
+        super().__init__(
+            model_key=key,
+            template='arcface_128',
+            crop_size=(128, 128),
+            mean=[0.0, 0.0, 0.0],
+            std=[1.0, 1.0, 1.0],
+            providers=providers
+        )
         
-        # 1. Initialize ONNX Session
-        sess_options = getattr(state, "session_options", None)
-        self.session = onnxruntime.InferenceSession(model_path, providers=self.providers, sess_options=sess_options)
-        logger.debug(f"Loading Swapper Model: {model_key} {provider_names} (Active Providers: {self.session.get_providers()})")
-        
-        # 2. Extract model initializer for embedding dot product
-        model = onnx.load(model_path)
+        # Inswapper requires projecting embedding with model initializer
+        model = onnx.load(str(MODEL_PATHS[self.model_key]))
         self.model_initializer = onnx.numpy_helper.to_array(model.graph.initializer[-1])
-        
-        self.template = 'arcface_128'
-        self.crop_size = (128, 128)
-        self.mean = [0.0, 0.0, 0.0]
-        self.std = [1.0, 1.0, 1.0]
-        
-    def swap(
-        self,
-        source_face: Face,
-        target_face: Face,
-        temp_vision_frame: np.ndarray,
-        swap_weight: Optional[float] = None,
-        mask_types: Optional[List[str]] = None,
-        mask_regions: Optional[List[str]] = None,
-        mask_padding: Optional[List[int]] = None,
-        mask_blur: Optional[float] = None,
-        clean_source_face: Optional[bool] = None,
-        face_boost: Optional[str] = None,
-        restore_model: Optional[str] = None,
-        restore_weight: Optional[float] = None,
-        restore_blend: Optional[float] = None,
-        target_hair_protect: Optional[bool] = None
-    ) -> np.ndarray:
-        if temp_vision_frame is None:
-            return temp_vision_frame
-            
-        if source_face is None or source_face.embedding is None:
-            logger.warning("Inswapper: Source face or embedding is None.")
-            return temp_vision_frame
-            
-        if target_face is None or not hasattr(target_face, "landmark_5") or target_face.landmark_5 is None:
-            logger.warning("Inswapper: Target face or landmarks are None.")
-            return temp_vision_frame
-            
-        if swap_weight is None:
-            swap_weight = getattr(state, "swap_weight", 0.65)
-        if mask_types is None:
-            mask_types = getattr(state, "mask_types", ["box"])
-            
-        # 1. Warp target face
-        crop_vision_frame, affine_matrix = face_math.warp_face_by_face_landmark_5(
-            temp_vision_frame, 
-            target_face.landmark_5, 
-            self.template, 
-            self.crop_size
-        )
-        
-        if crop_vision_frame is None or affine_matrix is None:
-            logger.warning("Inswapper: Failed to warp target face.")
-            return temp_vision_frame
-        
-        original_crop_vision_frame = crop_vision_frame.copy()
-        
-        # 2. Prepare target crop tensor
-        crop_vision_frame = crop_vision_frame[:, :, ::-1] / 255.0  # BGR to RGB, normalize 0-1
-        crop_vision_frame = (crop_vision_frame - self.mean) / self.std
-        crop_vision_frame = crop_vision_frame.transpose(2, 0, 1)    # HWC to CHW
-        crop_vision_frame = np.expand_dims(crop_vision_frame, axis=0).astype(np.float32)
-        
-        # 3. Prepare source embedding
-        weight = float(np.interp(swap_weight, [0, 1], [0.35, -0.35]))
-        
-        source_embedding = source_face.embedding.copy().reshape(1, -1)
-        if getattr(target_face, "embedding", None) is not None and weight != 0:
-            target_embedding = target_face.embedding.copy().reshape(1, -1)
-            target_norm = np.linalg.norm(target_embedding)
-            if target_norm > 0:
-                target_embedding = target_embedding / target_norm
-            balanced_embedding = source_embedding * (1 - weight) + target_embedding * weight
-        else:
-            balanced_embedding = source_embedding
-            
-        balanced_norm = np.linalg.norm(balanced_embedding)
-        if balanced_norm > 0:
-            source_embedding_proj = np.dot(balanced_embedding, self.model_initializer) / balanced_norm
-        else:
-            source_embedding_proj = np.dot(balanced_embedding, self.model_initializer)
-            
-        # 4. Run Inference
-        inputs = {
-            'source': source_embedding_proj,
-            'target': crop_vision_frame
-        }
-        swapped_crop = self.session.run(None, inputs)[0][0]
-        
-        # 5. Denormalize swapped crop
-        swapped_crop = swapped_crop.transpose(1, 2, 0) # CHW to HWC
-        swapped_crop = swapped_crop * self.std + self.mean
-        swapped_crop = swapped_crop.clip(0, 1)
-        swapped_crop = swapped_crop[:, :, ::-1] * 255.0 # RGB to BGR
-        
-        # 6. Check Face Boost (in-crop enhancement & scaled paste-back)
-        boost_mode = face_boost or getattr(state, "face_boost", "none")
-        if boost_mode in ["256", "512"]:
-            boost_size = int(boost_mode)
-            scale = boost_size / float(self.crop_size[0])  # e.g. 512 / 128 = 4.0
-            boosted_crop = cv2.resize(swapped_crop, (boost_size, boost_size), interpolation=cv2.INTER_CUBIC)
-            
-            # Apply in-crop restoration if a restorer is configured
-            eff_restore_model = restore_model or getattr(state, "restore_model", "gfpgan_1.4")
-            if eff_restore_model and eff_restore_model != "none":
-                from uniface.modules.restorer import restore_crop
-                eff_weight = restore_weight if restore_weight is not None else getattr(state, "restore_weight", 1.0)
-                eff_blend = (restore_blend / 100.0) if (restore_blend is not None and restore_blend > 1.0) else (restore_blend if restore_blend is not None else getattr(state, "restore_blend", 100) / 100.0)
-                boosted_crop = restore_crop(boosted_crop, weight=eff_weight, blend=eff_blend, restore_model=eff_restore_model, providers=self.providers)
-                
-            # Scaled affine matrix (local copy, target_face.landmark_5 remains completely untouched!)
-            scaled_affine_matrix = affine_matrix.copy() * scale
-            
-            from uniface.modules.parser import get_combined_mask
-            crop_mask = get_combined_mask(
-                temp_vision_frame, 
-                boosted_crop, 
-                mask_types, 
-                target_face, 
-                scaled_affine_matrix, 
-                mask_padding=mask_padding, 
-                mask_blur=mask_blur, 
-                mask_regions=mask_regions,
-                target_hair_protect=target_hair_protect
-            )
-            
-            return face_math.paste_back(temp_vision_frame, boosted_crop, crop_mask, scaled_affine_matrix)
 
-        # Standard paste-back
-        from uniface.modules.parser import get_combined_mask
-        crop_mask = get_combined_mask(
-            temp_vision_frame, 
-            original_crop_vision_frame, 
-            mask_types, 
-            target_face, 
-            affine_matrix, 
-            mask_padding=mask_padding, 
-            mask_blur=mask_blur, 
-            mask_regions=mask_regions,
-            target_hair_protect=target_hair_protect
-        )
-        
-        # 7. Paste back
-        paste_vision_frame = face_math.paste_back(temp_vision_frame, swapped_crop, crop_mask, affine_matrix)
-        return paste_vision_frame

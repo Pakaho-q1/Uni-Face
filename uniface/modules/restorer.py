@@ -49,6 +49,8 @@ class FaceRestorer:
         self.input_name = self.session.get_inputs()[0].name
         self.weight_name = 'weight' if self.has_weight else None
 
+
+
     def restore(
         self,
         target_face: Face,
@@ -80,35 +82,17 @@ class FaceRestorer:
         if crop_vision_frame is None or affine_matrix is None:
             return temp_vision_frame
         
-        # 2. Prepare tensor (RGB, -1 to 1, NCHW)
-        prepare_vision_frame = crop_vision_frame[:, :, ::-1] / 255.0
-        prepare_vision_frame = (prepare_vision_frame - 0.5) / 0.5
-        prepare_vision_frame = np.expand_dims(prepare_vision_frame.transpose(2, 0, 1), axis=0).astype(np.float32)
-        
-        # 3. Inference
-        inputs = {self.input_name: prepare_vision_frame}
-        if self.has_weight:
-            inputs[self.weight_name] = np.array([weight], dtype=np.float64)
+        # 2. Check if face is close-up/large or touching boundaries
+        need_padding = face_math.check_face_needs_padding(target_face, temp_vision_frame.shape)
+        pad_ratio = 0.15 if need_padding else 0.0
+
+        # 3. Enhance crop via restore_crop
+        enhanced_crop = self.restore_crop(crop_vision_frame, weight=weight, blend=blend, padding_ratio=pad_ratio)
             
-        enhanced_crop = self.session.run(None, inputs)[0][0]
-        
-        # 4. Denormalize tensor (NCHW to HWC, RGB to BGR, 0 to 255)
-        enhanced_crop = np.clip(enhanced_crop, -1, 1)
-        enhanced_crop = (enhanced_crop + 1) / 2
-        enhanced_crop = enhanced_crop.transpose(1, 2, 0)
-        enhanced_crop = (enhanced_crop[:, :, ::-1] * 255.0).astype(np.uint8)
-        
-        if enhanced_crop.shape[:2] != crop_vision_frame.shape[:2]:
-            enhanced_crop = cv2.resize(enhanced_crop, (crop_vision_frame.shape[1], crop_vision_frame.shape[0]))
-            
-        # 5. Blend with original crop if blend < 1.0
-        if blend < 1.0:
-            enhanced_crop = cv2.addWeighted(crop_vision_frame, 1 - blend, enhanced_crop, blend, 0)
-            
-        # 6. Generate precise mask using Parser
+        # 4. Generate precise mask using Parser
         crop_mask = get_combined_mask(temp_vision_frame, crop_vision_frame, mask_types, target_face, affine_matrix)
         
-        # 7. Paste back into original frame
+        # 5. Paste back into original frame
         paste_vision_frame = face_math.paste_back(temp_vision_frame, enhanced_crop, crop_mask, affine_matrix)
         return paste_vision_frame
 
@@ -116,20 +100,34 @@ class FaceRestorer:
         self,
         crop_image: np.ndarray,
         weight: float = 0.5,
-        blend: float = 0.8
+        blend: float = 0.8,
+        padding_ratio: float = 0.0
     ) -> np.ndarray:
         """
         Directly enhance an aligned face crop (used by Face Boost and Restore Source Face).
+        Supports adaptive padding for close-up/large faces touching boundaries.
         """
         if crop_image is None:
             return crop_image
             
+        if crop_image.dtype != np.uint8:
+            crop_image = np.clip(crop_image, 0, 255).astype(np.uint8)
+            
         h, w = crop_image.shape[:2]
-        need_resize = (w != self.crop_size[0] or h != self.crop_size[1])
-        if need_resize:
-            input_crop = cv2.resize(crop_image, self.crop_size, interpolation=cv2.INTER_CUBIC)
+        
+        # 1. Apply adaptive padding if requested
+        if padding_ratio > 0.0:
+            padded_input, pad_info = face_math.pad_and_resize_crop(crop_image, padding_ratio=padding_ratio)
         else:
-            input_crop = crop_image
+            padded_input = crop_image
+            pad_info = (0, 0, 0, 0)
+            
+        cur_h, cur_w = padded_input.shape[:2]
+        need_resize = (cur_w != self.crop_size[0] or cur_h != self.crop_size[1])
+        if need_resize:
+            input_crop = cv2.resize(padded_input, self.crop_size, interpolation=cv2.INTER_CUBIC)
+        else:
+            input_crop = padded_input
             
         prepare_vision_frame = input_crop[:, :, ::-1] / 255.0
         prepare_vision_frame = (prepare_vision_frame - 0.5) / 0.5
@@ -140,15 +138,26 @@ class FaceRestorer:
             inputs[self.weight_name] = np.array([weight], dtype=np.float64)
             
         enhanced_crop = self.session.run(None, inputs)[0][0]
+
         enhanced_crop = np.clip(enhanced_crop, -1, 1)
         enhanced_crop = (enhanced_crop + 1) / 2
         enhanced_crop = enhanced_crop.transpose(1, 2, 0)
         enhanced_crop = (enhanced_crop[:, :, ::-1] * 255.0).astype(np.uint8)
         
-        if need_resize:
-            enhanced_crop = cv2.resize(enhanced_crop, (w, h), interpolation=cv2.INTER_CUBIC)
+        if enhanced_crop.shape[:2] != (cur_h, cur_w):
+            enhanced_crop = cv2.resize(enhanced_crop, (cur_w, cur_h), interpolation=cv2.INTER_CUBIC)
+            
+        # 2. Reverse adaptive padding
+        if pad_info != (0, 0, 0, 0):
+            enhanced_crop = face_math.unpad_crop(enhanced_crop, pad_info, (h, w))
+            if enhanced_crop.dtype != np.uint8:
+                enhanced_crop = np.clip(enhanced_crop, 0, 255).astype(np.uint8)
             
         if blend < 1.0:
+            if crop_image.dtype != enhanced_crop.dtype:
+                crop_image = crop_image.astype(enhanced_crop.dtype)
+            if crop_image.shape[:2] != enhanced_crop.shape[:2]:
+                crop_image = cv2.resize(crop_image, (enhanced_crop.shape[1], enhanced_crop.shape[0]))
             enhanced_crop = cv2.addWeighted(crop_image, 1 - blend, enhanced_crop, blend, 0)
             
         return enhanced_crop
@@ -198,12 +207,14 @@ def restore_crop(
     weight: Optional[float] = None,
     blend: Optional[float] = None,
     restore_model: Optional[str] = None,
-    providers: Optional[List[Any]] = None
+    providers: Optional[List[Any]] = None,
+    padding_ratio: float = 0.0
 ) -> np.ndarray:
     if weight is None:
         weight = getattr(state, "restore_weight", 1.0)
     if blend is None:
         blend = getattr(state, "restore_blend", 100) / 100.0
     restorer_instance = get_restorer(restore_model=restore_model, providers=providers)
-    return restorer_instance.restore_crop(crop_image, weight=weight, blend=blend)
+    return restorer_instance.restore_crop(crop_image, weight=weight, blend=blend, padding_ratio=padding_ratio)
+
 

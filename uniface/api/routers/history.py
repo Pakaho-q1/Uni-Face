@@ -9,7 +9,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from uniface.core.workspace import ensure_workspace, get_platform_dir
-from uniface.core.image_service import get_letterbox_thumbnail
+from uniface.modules.utils.image_io import get_letterbox_thumbnail
 from uniface.core.job_manager import is_image_path
 from uniface.core.logging import get_logger
 

@@ -60,5 +60,26 @@ class TestFaceRestorer(unittest.TestCase):
         result_frame_blended = restorer.restore(target_face, temp_vision_frame, blend=0.5)
         self.assertEqual(result_frame_blended.shape, (200, 200, 3))
 
+    @patch('onnxruntime.InferenceSession')
+    def test_restore_crop_with_float_input_and_blend(self, mock_ort_session):
+        mock_session = MagicMock()
+        mock_input = MagicMock()
+        mock_input.name = 'input'
+        mock_session.get_inputs.return_value = [mock_input]
+        mock_ort_session.return_value = mock_session
+        
+        dummy_out = np.zeros((3, 512, 512), dtype=np.float32)
+        mock_session.run.return_value = [[dummy_out]]
+        
+        restorer = FaceRestorer()
+        
+        # Float32 input crop as produced by un-cast swappers
+        float_crop = np.random.uniform(0, 255, (512, 512, 3)).astype(np.float32)
+        
+        # Must not raise OpenCV error (-5:Bad argument) when blend < 1.0
+        enhanced = restorer.restore_crop(float_crop, blend=0.7)
+        self.assertEqual(enhanced.shape, (512, 512, 3))
+        self.assertEqual(enhanced.dtype, np.uint8)
+
 if __name__ == '__main__':
     unittest.main()

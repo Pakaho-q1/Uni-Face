@@ -64,3 +64,20 @@ def swap(
         restore_blend=restore_blend,
         target_hair_protect=target_hair_protect
     )
+
+def swap_crop(
+    source_face: Face,
+    crop: np.ndarray,
+    swap_model: Optional[str] = None,
+    swap_weight: Optional[float] = None,
+    target_face: Optional[Face] = None,
+    providers: Optional[List[Any]] = None
+) -> np.ndarray:
+    swapper_instance = get_swapper(model_key=swap_model, providers=providers)
+    return swapper_instance.swap_crop(
+        source_face=source_face,
+        crop_vision_frame=crop,
+        swap_weight=swap_weight,
+        target_face=target_face
+    )
+

@@ -66,6 +66,8 @@ class JobConfig:
     # ReActor Enhancements & Face Boost
     face_boost: str = "none"  # "none", "256", "512"
     restore_source_face: bool = False
+    restore_source_face_model: str = "gfpgan_1.4"
+    restore_source_face_weight: float = 0.8
     target_hair_protect: bool = True
     
     _cached_ref_embs: Optional[list[np.ndarray]] = field(default=None, repr=False, compare=False)
@@ -124,6 +126,8 @@ class JobConfig:
             mask_blur=float(getattr(state_obj, "mask_blur", 0.3)),
             face_boost=str(getattr(state_obj, "face_boost", "none")),
             restore_source_face=bool(getattr(state_obj, "restore_source_face", False)),
+            restore_source_face_model=str(getattr(state_obj, "restore_source_face_model", "gfpgan_1.4")),
+            restore_source_face_weight=float(getattr(state_obj, "restore_source_face_weight", 0.8)),
             target_hair_protect=bool(getattr(state_obj, "target_hair_protect", True))
         )
 

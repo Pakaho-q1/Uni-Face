@@ -43,6 +43,17 @@ def generate_job_id() -> str:
     short_id = uuid.uuid4().hex[:4]
     return f"{now_str}_{short_id}"
 
+def create_b64_preview(frame: np.ndarray, resolution: int, quality: int = 50) -> str:
+    """Encode an in-memory frame to a base64 JPEG thumbnail string."""
+    h, w = frame.shape[:2]
+    scale = resolution / max(h, w)
+    if scale < 1.0:
+        preview_frame = cv2.resize(frame, (int(w * scale), int(h * scale)))
+    else:
+        preview_frame = frame
+    _, buffer = cv2.imencode('.jpg', preview_frame, [cv2.IMWRITE_JPEG_QUALITY, quality])
+    return f"data:image/jpeg;base64,{base64.b64encode(buffer).decode('utf-8')}"
+
 class JobStartRequest(BaseModel):
     source_type: str = "image"
     source_file_id: str
@@ -84,6 +95,13 @@ class JobStartRequest(BaseModel):
     clean_source_face: bool = False
     mask_padding: list[int] = [0, 0, 0, 0]
     mask_blur: float = 0.3
+    
+    # ReActor Enhancements & Face Boost
+    face_boost: str = "none"
+    restore_source_face: bool = False
+    restore_source_face_model: str = "gfpgan_1.4"
+    restore_source_face_weight: float = 0.8
+    target_hair_protect: bool = True
     
     immich_url: str = ""
     immich_api_key: str = ""
@@ -206,10 +224,7 @@ class JobManager:
 
     def create_job(self, platform: str, req: Optional[JobStartRequest] = None) -> str:
         job_id = generate_job_id()
-        
-        # Set up job workspace and zero-copy hardlinks
-        if req:
-            setup_job_hardlinks(platform, job_id, req)
+        ensure_job_workspace(platform, job_id)
         
         source_type = req.source_type if req else "image"
         source_file_id = req.source_file_id if req else None
@@ -341,6 +356,11 @@ class JobManager:
         try:
             import shutil
             platform = job.get("platform", "unknown")
+            job_id = job.get("id")
+            if job_id:
+                ws = get_job_workspace(platform, job_id)
+                if os.path.exists(ws["temp_dir"]):
+                    shutil.rmtree(ws["temp_dir"], ignore_errors=True)
             _, outputs_dir = ensure_workspace(platform)
             temp_root = os.path.join(outputs_dir, "temp")
             
@@ -414,10 +434,6 @@ class JobManager:
             req.skip_existing = True
             logger.info(f"[RETRY] Loaded job config for {job_id}: {len(req.target_file_ids)} target(s), platform={platform}")
             
-            # Ensure workspace and hardlinks exist
-            setup_job_hardlinks(platform, job_id, req)
-            logger.info(f"[RETRY] Workspace sandbox hardlinks verified for job {job_id}")
-            
             # Reset cancel event
             self.cancel_events[job_id] = threading.Event()
             
@@ -484,6 +500,7 @@ def run_job_background(job_id: str, req: JobStartRequest, x_client_platform: str
     
     source_dir = ws["source_dir"]
     target_dir = ws["target_dir"]
+    job_temp_dir = ws["temp_dir"]
     job_output_dir = ws["output_dir"]
     
     # Resolve source path (prefer job sandbox, fallback to uploads)
@@ -542,7 +559,12 @@ def run_job_background(job_id: str, req: JobStartRequest, x_client_platform: str
         restore_blend_2=getattr(req, "restore_blend_2", 100),
         clean_source_face=getattr(req, "clean_source_face", False),
         mask_padding=list(getattr(req, "mask_padding", [0, 0, 0, 0])),
-        mask_blur=float(getattr(req, "mask_blur", 0.3))
+        mask_blur=float(getattr(req, "mask_blur", 0.3)),
+        face_boost=str(getattr(req, "face_boost", "none")),
+        restore_source_face=bool(getattr(req, "restore_source_face", False)),
+        restore_source_face_model=str(getattr(req, "restore_source_face_model", "gfpgan_1.4")),
+        restore_source_face_weight=float(getattr(req, "restore_source_face_weight", 0.8)),
+        target_hair_protect=bool(getattr(req, "target_hair_protect", True))
     )
     
     logger.debug(f"Job {job_id} reference_face_ids: {len(job_config.reference_face_ids)}")
@@ -559,23 +581,17 @@ def run_job_background(job_id: str, req: JobStartRequest, x_client_platform: str
         if req.source_type == "model":
             from uniface.core.face_model import load_face_model
             source_face = load_face_model(req.source_file_id, get_platform_dir(x_client_platform))
+            if not source_face or "embeddings" not in source_face or len(source_face["embeddings"]) == 0:
+                raise ValueError(f"Face model '{req.source_file_id}' contains no valid embeddings.")
         else:
-            from uniface.modules.detector import detect
+            from uniface.core.service import resolve_source_face
             source_img = cv2.imread(source_path)
             if source_img is None:
                 raise Exception("Could not read source image")
                 
-            source_faces = detect(
-                source_img,
-                detector_score=job_config.face_detector_score,
-                landmark_score=job_config.face_landmark_score,
-                clean_source_face=getattr(job_config, "clean_source_face", False)
-            )
-            if not source_faces:
+            source_face = resolve_source_face(source_img, job_config=job_config)
+            if source_face is None:
                 raise Exception("No face detected in source image")
-                
-            source_faces.sort(key=lambda x: (x.bbox[2]-x.bbox[0])*(x.bbox[3]-x.bbox[1]), reverse=True)
-            source_face = source_faces[0]
         
         total_targets = len(req.target_file_ids)
         logger.info(f"Starting job {job_id} with {total_targets} target files: {req.target_file_ids}")
@@ -673,15 +689,7 @@ def run_job_background(job_id: str, req: JobStartRequest, x_client_platform: str
                     
                     freq = max(1, req.preview_frequency)
                     if preview_enabled and frame is not None and (current == 1 or current % freq == 0 or current == total):
-                        h, w = frame.shape[:2]
-                        scale = preview_res / max(h, w)
-                        if scale < 1.0:
-                            preview_frame = cv2.resize(frame, (int(w*scale), int(h*scale)))
-                        else:
-                            preview_frame = frame
-                        _, buffer = cv2.imencode('.jpg', preview_frame, [cv2.IMWRITE_JPEG_QUALITY, 50])
-                        b64 = base64.b64encode(buffer).decode('utf-8')
-                        updates["preview_image"] = f"data:image/jpeg;base64,{b64}"
+                        updates["preview_image"] = create_b64_preview(frame, preview_res)
                     job_manager.update_job(job_id, updates, force=True)
                     
                 process_images_swarm(
@@ -739,15 +747,7 @@ def run_job_background(job_id: str, req: JobStartRequest, x_client_platform: str
                 
                 freq = max(1, req.preview_frequency)
                 if preview_enabled and frame is not None and (current == 1 or current % freq == 0 or current == total):
-                    h, w = frame.shape[:2]
-                    scale = preview_res / max(h, w)
-                    if scale < 1.0:
-                        preview_frame = cv2.resize(frame, (int(w*scale), int(h*scale)))
-                    else:
-                        preview_frame = frame
-                    _, buffer = cv2.imencode('.jpg', preview_frame, [cv2.IMWRITE_JPEG_QUALITY, 50])
-                    b64 = base64.b64encode(buffer).decode('utf-8')
-                    updates["preview_image"] = f"data:image/jpeg;base64,{b64}"
+                    updates["preview_image"] = create_b64_preview(frame, preview_res)
                 job_manager.update_job(job_id, updates)
                 
             process_video(
@@ -757,22 +757,27 @@ def run_job_background(job_id: str, req: JobStartRequest, x_client_platform: str
                 progress_callback=vid_progress, 
                 cancel_event=cancel_event, 
                 skip_existing=req.skip_existing,
-                job_config=job_config
+                job_config=job_config,
+                job_temp_dir=job_temp_dir
             )
             
             if cancel_event.is_set():
+                v_dir = os.path.dirname(v_out)
+                v_base = os.path.basename(v_out)
+                cand_temp = os.path.join(v_dir, f"temp_{v_base}")
+                if os.path.exists(cand_temp):
+                    job_manager.update_job(job_id, {"output_path": cand_temp})
                 break
                 
-            # If successfully completed, remove any leftover partial interrupted videos (e.g. out_xxx_30%.mp4)
+            # If successfully completed, remove any leftover partial temporary videos (temp_ / retry_)
             v_dir, v_file = os.path.split(v_out)
-            v_stem, v_ext = os.path.splitext(v_file)
-            if os.path.exists(v_dir):
-                for fname in os.listdir(v_dir):
-                    if fname.startswith(f"{v_stem}_") and "%" in fname and fname.endswith(v_ext):
-                        try:
-                            os.remove(os.path.join(v_dir, fname))
-                        except Exception:
-                            pass
+            for pfx in ["temp_", "retry_"]:
+                p_cand = os.path.join(v_dir, f"{pfx}{v_file}")
+                if os.path.exists(p_cand):
+                    try:
+                        os.remove(p_cand)
+                    except Exception:
+                        pass
 
             processed_total += 1
                 
@@ -780,15 +785,9 @@ def run_job_background(job_id: str, req: JobStartRequest, x_client_platform: str
             # Clean up ephemeral job sandbox (jobs/<job_id>)
             cleanup_job_workspace(x_client_platform, job_id, delete_output=False)
             
-            # Clean up temp folder inside output dir if left
-            temp_in_out = os.path.join(job_output_dir, "temp")
-            if os.path.exists(temp_in_out):
-                import shutil
-                shutil.rmtree(temp_in_out, ignore_errors=True)
-
             final_output_path = job_output_dir
             if os.path.exists(job_output_dir):
-                disk_files = [f for f in os.listdir(job_output_dir) if os.path.isfile(os.path.join(job_output_dir, f)) and os.path.getsize(os.path.join(job_output_dir, f)) > 0]
+                disk_files = [f for f in os.listdir(job_output_dir) if os.path.isfile(os.path.join(job_output_dir, f)) and os.path.getsize(os.path.join(job_output_dir, f)) > 0 and not f.startswith(("temp_", "retry_"))]
                 if disk_files:
                     final_output_path = os.path.join(job_output_dir, sorted(disk_files)[-1])
 

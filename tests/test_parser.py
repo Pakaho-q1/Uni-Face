@@ -141,6 +141,43 @@ class TestMaskParser(unittest.TestCase):
             self.assertEqual(mask[5, 5], 0.0)
             self.assertEqual(mask[250, 250], 0.0)
 
+    @patch('onnxruntime.InferenceSession')
+    def test_single_pass_bisenet_caching(self, mock_ort_session):
+        mock_bisenet = MagicMock()
+        mock_input = MagicMock()
+        mock_input.name = "input"
+        mock_bisenet.get_inputs.return_value = [mock_input]
+        mock_ort_session.return_value = mock_bisenet
+        
+        dummy_pred = np.zeros((19, 512, 512), dtype=np.float32)
+        mock_bisenet.run.return_value = [dummy_pred]
+        
+        from uniface.core.types import Face
+        target_face = Face(
+            bbox=np.array([100, 100, 400, 400]),
+            landmark_5=np.array([[192, 240], [319, 240], [257, 314], [201, 371], [313, 371]], dtype=np.float32)
+        )
+        
+        parser = MaskParser()
+        full_frame = np.zeros((512, 512, 3), dtype=np.uint8)
+        crop_frame = np.zeros((128, 128, 3), dtype=np.uint8)
+        affine_matrix = np.eye(2, 3, dtype=np.float32)
+        
+        # When both region and hair protect are called on same target_face
+        _ = parser.create_region_mask(full_frame, target_face, affine_matrix, crop_frame.shape, regions=['skin'])
+        _ = parser.create_target_bisenet_mask(full_frame, target_face, affine_matrix, crop_frame.shape)
+        
+        # BiSeNet should ONLY have been called ONCE due to caching!
+        self.assertEqual(mock_bisenet.run.call_count, 1)
+
+    def test_map_mask_between_crops(self):
+        from uniface.modules.utils.face_math import map_mask_between_crops
+        src_mask = np.ones((512, 512), dtype=np.float32)
+        src_mat = np.array([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], dtype=np.float32)
+        dst_mat = np.array([[0.5, 0.0, 0.0], [0.0, 0.5, 0.0]], dtype=np.float32)
+        mapped = map_mask_between_crops(src_mask, src_mat, dst_mat, (256, 256, 3))
+        self.assertEqual(mapped.shape, (256, 256))
+
 if __name__ == '__main__':
     unittest.main()
 

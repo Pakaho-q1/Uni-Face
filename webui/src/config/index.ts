@@ -59,6 +59,8 @@ export const DEFAULT_SETTINGS = {
   // ReActor Logics
   faceBoost: 'none',
   restoreSourceFace: false,
+  restoreSourceFaceModel: 'gfpgan_1.4',
+  restoreSourceFaceWeight: 80,
   targetHairProtect: true,
   
   // Immich

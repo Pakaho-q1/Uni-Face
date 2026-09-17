@@ -165,6 +165,14 @@ export function useSettings(): SettingsState {
     DEFAULT_SETTINGS.restoreSourceFace,
     'setting_restoreSourceFace'
   );
+  const [restoreSourceFaceModel, setRestoreSourceFaceModel] = useStickyState<string>(
+    DEFAULT_SETTINGS.restoreSourceFaceModel,
+    'setting_restoreSourceFaceModel'
+  );
+  const [restoreSourceFaceWeight, setRestoreSourceFaceWeight] = useStickyState<number[]>(
+    [DEFAULT_SETTINGS.restoreSourceFaceWeight],
+    'setting_restoreSourceFaceWeight'
+  );
   const [targetHairProtect, setTargetHairProtect] = useStickyState<boolean>(
     DEFAULT_SETTINGS.targetHairProtect,
     'setting_targetHairProtect'
@@ -243,6 +251,8 @@ export function useSettings(): SettingsState {
     maskBlur, setMaskBlur,
     faceBoost, setFaceBoost,
     restoreSourceFace, setRestoreSourceFace,
+    restoreSourceFaceModel, setRestoreSourceFaceModel,
+    restoreSourceFaceWeight, setRestoreSourceFaceWeight,
     targetHairProtect, setTargetHairProtect,
     immichUrl, setImmichUrl,
     immichApiKey, setImmichApiKey,
